@@ -83,6 +83,9 @@ pub struct UnityLaunchResult {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnityConnectionStatus {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    pub project_path: String,
     pub connected: bool,
     pub editor_status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -619,6 +622,18 @@ fn unity_process_info_from_status(
     })
 }
 
+fn connection_status_project_identity(project_path: &str) -> (Option<String>, String) {
+    let normalized = normalized_project_path_for_launch(project_path)
+        .display()
+        .to_string();
+    let workspace_id = if is_unity_project(&normalized) {
+        crate::workspace::load_or_create_workspace(&normalized).ok()
+    } else {
+        None
+    };
+    (workspace_id, normalized)
+}
+
 fn process_hint_from_response(
     resp: &PipeResponse,
     project_path: &str,
@@ -768,6 +783,7 @@ pub async fn query_unity_connection_status(project_path: &str) -> UnityConnectio
     let pipe_name = get_pipe_name(project_path);
     let checked_at_ms = unix_now_ms();
     let started_at = std::time::Instant::now();
+    let (workspace_id, normalized_project_path) = connection_status_project_identity(project_path);
 
     match send_message(project_path, "status", "").await {
         Ok(resp) if resp.ok => {
@@ -776,6 +792,8 @@ pub async fn query_unity_connection_status(project_path: &str) -> UnityConnectio
             let message = resp.message.unwrap_or_default();
             let (editor_status, scene_path) = parse_unity_status_message(&message);
             let mut status = UnityConnectionStatus {
+                workspace_id,
+                project_path: normalized_project_path,
                 connected: true,
                 editor_status: editor_status.to_string(),
                 scene_path,
@@ -801,6 +819,8 @@ pub async fn query_unity_connection_status(project_path: &str) -> UnityConnectio
         Ok(resp) => {
             let latency_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
             let mut status = UnityConnectionStatus {
+                workspace_id,
+                project_path: normalized_project_path,
                 connected: false,
                 editor_status: UNITY_EDITOR_STATUS_DISCONNECTED.to_string(),
                 scene_path: None,
@@ -828,6 +848,8 @@ pub async fn query_unity_connection_status(project_path: &str) -> UnityConnectio
         }
         Err(error) => {
             let mut status = UnityConnectionStatus {
+                workspace_id,
+                project_path: normalized_project_path,
                 connected: false,
                 editor_status: UNITY_EDITOR_STATUS_DISCONNECTED.to_string(),
                 scene_path: None,

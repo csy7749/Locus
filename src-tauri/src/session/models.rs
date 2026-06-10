@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 pub struct SessionSummary {
     pub id: String,
     pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
     pub agent_id: Option<String>,
     pub session_type: String,
     pub parent_session_id: Option<String>,

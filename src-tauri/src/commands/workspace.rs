@@ -12,6 +12,7 @@ use crate::commands::asset::{
 };
 use crate::error::AppError;
 use crate::keychain;
+use crate::unity_project_runtime::UnityProjectRegistry;
 use crate::unity_bridge::UnityMonitorHandle;
 use crate::workspace::Workspace;
 use crate::AssetDbWatcherHandle;
@@ -190,6 +191,24 @@ fn emit_asset_reconcile_error_if_current(
     )
 }
 
+fn sync_unity_project_registry(
+    registry: &UnityProjectRegistry,
+    canonical: &str,
+    expected_workspace_id: &str,
+) -> Result<(), AppError> {
+    if !crate::unity_bridge::is_unity_project(canonical) {
+        return Ok(());
+    }
+    let workspace_id = registry.register_project(canonical)?;
+    if workspace_id != expected_workspace_id {
+        eprintln!(
+            "[Locus] warning: Unity project registry workspace id {} differs from active workspace id {}",
+            workspace_id, expected_workspace_id
+        );
+    }
+    Ok(())
+}
+
 fn spawn_background_asset_hash_reconcile(
     app_handle: AppHandle,
     workspace: Arc<Workspace>,
@@ -331,6 +350,7 @@ pub async fn set_working_dir(
     knowledge_index_state: State<'_, Arc<crate::knowledge_index::KnowledgeIndexState>>,
     app_knowledge_dir: State<'_, crate::commands::AppKnowledgeDir>,
     registry: State<'_, crate::AgentDefRegistryState>,
+    unity_project_registry: State<'_, Arc<UnityProjectRegistry>>,
     app_agent_dir: State<'_, crate::AppAgentDir>,
     app_handle: AppHandle,
 ) -> Result<String, AppError> {
@@ -363,6 +383,8 @@ pub async fn set_working_dir(
 
     let ws_id = crate::workspace::load_or_create_workspace(&canonical)?;
     switch_timer.mark_detail("workspace_id_ready", format!(" workspace_id={}", ws_id));
+    sync_unity_project_registry(unity_project_registry.inner().as_ref(), &canonical, &ws_id)?;
+    switch_timer.mark("unity_project_registry_synced");
 
     // Decide whether the workspace is actually changing. We compare the
     // canonical form against the currently-stored cwd. If unchanged, we keep
@@ -752,6 +774,10 @@ fn existing_recent_dirs(dirs: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+pub(crate) fn existing_recent_dirs_from_storage(data_dir: &std::path::Path) -> Vec<String> {
+    existing_recent_dirs(read_recent_dirs(data_dir))
+}
+
 fn save_recent_dir(data_dir: &std::path::Path, dir: &str) {
     let mut dirs = read_recent_dirs(data_dir);
 
@@ -766,7 +792,7 @@ fn save_recent_dir(data_dir: &std::path::Path, dir: &str) {
 pub async fn list_recent_dirs(app_handle: AppHandle) -> Result<Vec<String>, AppError> {
     let data_dir = super::resolve_runtime_storage_dir(&app_handle)
         .map_err(|e| format!("Failed to get app data dir: {}", e))?;
-    Ok(existing_recent_dirs(read_recent_dirs(&data_dir)))
+    Ok(existing_recent_dirs_from_storage(&data_dir))
 }
 
 #[tauri::command]
@@ -2326,6 +2352,17 @@ pub async fn launch_unity_project(
     crate::unity_bridge::launch_project(&cwd).map_err(Into::into)
 }
 
+async fn unity_command_project_path(
+    workspace_id: Option<&str>,
+    workspace: &Arc<Workspace>,
+    unity_projects: &Arc<UnityProjectRegistry>,
+) -> Result<String, AppError> {
+    match workspace_id.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(id) => Ok(unity_projects.activated_runtime(id)?.project_path.clone()),
+        None => Ok(workspace.path.read().await.clone()),
+    }
+}
+
 #[tauri::command]
 pub async fn send_unity_log(
     message: String,
@@ -2348,8 +2385,15 @@ pub async fn select_unity_asset(
     asset_path: String,
     focus_project_window: Option<bool>,
     workspace: State<'_, Arc<Workspace>>,
+    unity_projects: State<'_, Arc<UnityProjectRegistry>>,
+    workspace_id: Option<String>,
 ) -> Result<String, AppError> {
-    let cwd = workspace.path.read().await.clone();
+    let cwd = unity_command_project_path(
+        workspace_id.as_deref(),
+        workspace.inner(),
+        unity_projects.inner(),
+    )
+    .await?;
     crate::unity_bridge::select_asset(&cwd, &asset_path, focus_project_window.unwrap_or(true))
         .await?;
     Ok("ok".to_string())
@@ -2359,8 +2403,15 @@ pub async fn select_unity_asset(
 pub async fn open_unity_asset_inspector(
     asset_path: String,
     workspace: State<'_, Arc<Workspace>>,
+    unity_projects: State<'_, Arc<UnityProjectRegistry>>,
+    workspace_id: Option<String>,
 ) -> Result<String, AppError> {
-    let cwd = workspace.path.read().await.clone();
+    let cwd = unity_command_project_path(
+        workspace_id.as_deref(),
+        workspace.inner(),
+        unity_projects.inner(),
+    )
+    .await?;
     crate::unity_bridge::open_asset_inspector(&cwd, &asset_path).await?;
     Ok("ok".to_string())
 }
@@ -2370,8 +2421,15 @@ pub async fn select_unity_scene_object(
     scene_path: String,
     object_path: String,
     workspace: State<'_, Arc<Workspace>>,
+    unity_projects: State<'_, Arc<UnityProjectRegistry>>,
+    workspace_id: Option<String>,
 ) -> Result<String, AppError> {
-    let cwd = workspace.path.read().await.clone();
+    let cwd = unity_command_project_path(
+        workspace_id.as_deref(),
+        workspace.inner(),
+        unity_projects.inner(),
+    )
+    .await?;
     crate::unity_bridge::select_scene_object(&cwd, &scene_path, &object_path).await?;
     Ok("ok".to_string())
 }
@@ -2381,8 +2439,15 @@ pub async fn open_unity_scene_object_inspector(
     scene_path: String,
     object_path: String,
     workspace: State<'_, Arc<Workspace>>,
+    unity_projects: State<'_, Arc<UnityProjectRegistry>>,
+    workspace_id: Option<String>,
 ) -> Result<String, AppError> {
-    let cwd = workspace.path.read().await.clone();
+    let cwd = unity_command_project_path(
+        workspace_id.as_deref(),
+        workspace.inner(),
+        unity_projects.inner(),
+    )
+    .await?;
     crate::unity_bridge::open_scene_object_inspector(&cwd, &scene_path, &object_path).await?;
     Ok("ok".to_string())
 }

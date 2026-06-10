@@ -48,6 +48,10 @@ const MAX_KNOWLEDGE_PAGE_SIZE: usize = 500;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KnowledgeChangedEvent {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<String>,
     pub working_dir: String,
     pub source: String,
     pub changed_at: i64,
@@ -102,7 +106,10 @@ pub(crate) fn emit_knowledge_changed_with_target(
     source: &str,
     target: KnowledgeChangedTarget,
 ) {
+    let (workspace_id, project_path) = super::project_event_identity(working_dir);
     let payload = KnowledgeChangedEvent {
+        workspace_id,
+        project_path,
         working_dir: working_dir.to_string(),
         source: source.to_string(),
         changed_at: chrono::Utc::now().timestamp_millis(),

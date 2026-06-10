@@ -2,7 +2,7 @@
 import { computed, ref, onMounted } from "vue";
 import { t } from "../../i18n";
 import { useTheme, type ThemePreference } from "../../composables/useTheme";
-import { useDisplaySettings, type DiffReviewTarget, type FontSlot } from "../../composables/useDisplaySettings";
+import { useDisplaySettings, type DiffReviewTarget, type FontSlot, type SessionListScope } from "../../composables/useDisplaySettings";
 import { normalizeAppError } from "../../services/errors";
 import { ipcInvoke } from "../../services/ipc";
 import {
@@ -41,6 +41,11 @@ const themeOptions = computed(() =>
 const diffReviewTargetOptions = computed(() => [
   { value: "inline", label: t("settings.display.diffReviewInline") },
   { value: "window", label: t("settings.display.diffReviewWindow") },
+]);
+
+const sessionListScopeOptions = computed(() => [
+  { value: "activeProject", label: t("settings.display.sessionListActiveProject") },
+  { value: "allProjects", label: t("settings.display.sessionListAllProjects") },
 ]);
 
 const fontSlots: { slot: FontSlot; labelKey: string; mono: boolean }[] = [
@@ -232,6 +237,17 @@ async function updateViewWindowsAboveMain(value: boolean) {
         @update:model-value="setDisplay('showViewsInSessionPanel', $event)"
       />
       <span>{{ t("settings.display.showViewsInSessionPanel") }}</span>
+    </div>
+
+    <div class="choice-row">
+      <span class="choice-label">{{ t("settings.display.sessionListScope") }}</span>
+      <BaseSegmented
+        :model-value="display.sessionListScope"
+        :options="sessionListScopeOptions"
+        :aria-label="t('settings.display.sessionListScope')"
+        size="sm"
+        @update:model-value="setDisplay('sessionListScope', $event as SessionListScope)"
+      />
     </div>
 
     <div class="toggle-row" :class="{ disabled: !viewOpenInExistingWindowReady || viewOpenInExistingWindowBusy }">

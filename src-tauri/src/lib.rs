@@ -38,6 +38,7 @@ mod tool;
 pub mod unity_bridge;
 pub mod unity_csharp;
 mod unity_docs;
+pub mod unity_project_runtime;
 pub mod unity_serialized_property;
 pub mod unity_type_index;
 pub mod unity_yaml;
@@ -213,6 +214,7 @@ pub type KnowledgeFsWatcherHandle =
     Arc<std::sync::Mutex<Option<knowledge_watcher::KnowledgeFsWatcher>>>;
 use session::store::SessionStore;
 use tool::ToolRegistry;
+use unity_project_runtime::UnityProjectRegistry;
 use unity_bridge::UnityMonitorHandle;
 use workspace::Workspace;
 
@@ -449,7 +451,25 @@ pub fn run() {
             startup_for_setup.mark("setup_workspace_ready");
 
             let initial_working_dir_copy = initial_working_dir.clone();
+            let initial_workspace_id_copy = initial_workspace_id.clone();
             let workspace = Arc::new(Workspace::new(initial_working_dir, initial_workspace_id));
+            let unity_project_registry = Arc::new(UnityProjectRegistry::new());
+            if !initial_working_dir_copy.trim().is_empty()
+                && unity_bridge::is_unity_project(&initial_working_dir_copy)
+            {
+                match unity_project_registry
+                    .register_project(&initial_working_dir_copy)
+                    .and_then(|workspace_id| {
+                        let _created = unity_project_registry.activate_project(&workspace_id)?;
+                        unity_project_registry.select_active_ui_project(Some(&workspace_id))?;
+                        Ok(())
+                    }) {
+                    Ok(()) => {}
+                    Err(error) => {
+                        eprintln!("[Locus] warning: failed to register Unity project runtime: {error}");
+                    }
+                }
+            }
 
             let mut app_agent_dir_candidates = vec![
                 std::path::PathBuf::from("../agent"), // dev: src-tauri/../agent
@@ -705,6 +725,8 @@ pub fn run() {
                 let app_handle_for_reconcile = app.handle().clone();
                 let scan_phase_state_for_reconcile = scan_phase_state.clone();
                 let workspace_for_reconcile = workspace.clone();
+                let project_path_for_reconcile = project_root.display().to_string();
+                let workspace_id_for_reconcile = initial_workspace_id_copy.clone();
                 tauri::async_runtime::spawn_blocking(move || {
                     let _registration = registration;
                     startup_for_reconcile.mark("asset_reconcile_task_start");
@@ -712,6 +734,8 @@ pub fn run() {
                     let app_handle_for_progress = app_handle_for_reconcile.clone();
                     let scan_phase_state_for_progress = scan_phase_state_for_reconcile.clone();
                     let workspace_for_progress = workspace_for_reconcile.clone();
+                    let project_path_for_progress = project_path_for_reconcile.clone();
+                    let workspace_id_for_progress = workspace_id_for_reconcile.clone();
                     match asset_db::watcher::reconcile_graph_state_with_cancel_and_progress(
                         &project_root,
                         graph_state,
@@ -722,7 +746,12 @@ pub fn run() {
                                 return;
                             }
                             let phase = progress.to_scan_phase();
-                            let _ = app_handle_for_progress.emit("ref-graph-scan", &phase);
+                            commands::emit_project_scan_phase(
+                                &app_handle_for_progress,
+                                workspace_id_for_progress.as_deref(),
+                                &project_path_for_progress,
+                                &phase,
+                            );
                             scan_phase_state_for_progress.set(Some(phase));
                         },
                     ) {
@@ -744,7 +773,12 @@ pub fn run() {
                                     started_at.elapsed().as_millis()
                                 );
                                 let phase = asset_db::types::ScanPhase::ReconcileDone;
-                                let _ = app_handle_for_reconcile.emit("ref-graph-scan", &phase);
+                                commands::emit_project_scan_phase(
+                                    &app_handle_for_reconcile,
+                                    workspace_id_for_reconcile.as_deref(),
+                                    &project_path_for_reconcile,
+                                    &phase,
+                                );
                                 if scan_phase_state_for_reconcile
                                     .snapshot()
                                     .as_ref()
@@ -773,7 +807,12 @@ pub fn run() {
                                     .detail(err)
                                     .retryable(true),
                                 };
-                                let _ = app_handle_for_reconcile.emit("ref-graph-scan", &phase);
+                                commands::emit_project_scan_phase(
+                                    &app_handle_for_reconcile,
+                                    workspace_id_for_reconcile.as_deref(),
+                                    &project_path_for_reconcile,
+                                    &phase,
+                                );
                                 scan_phase_state_for_reconcile.set(Some(phase));
                             }
                         }
@@ -822,6 +861,7 @@ pub fn run() {
             app.manage(registry);
             app.manage(tool_registry);
             app.manage(workspace.clone());
+            app.manage(unity_project_registry.clone());
             app.manage(raw_context_store);
             app.manage(active_tasks);
             app.manage(pending_input_queue);
@@ -878,6 +918,7 @@ pub fn run() {
 
             let app_handle = app.handle().clone();
             let workspace_for_unity = workspace.clone();
+            let unity_project_registry_for_unity = unity_project_registry.clone();
             let startup_for_unity = startup_for_setup.clone();
             tauri::async_runtime::spawn(async move {
                 startup_for_unity.mark("unity_monitor_task_start");
@@ -888,13 +929,33 @@ pub fn run() {
                     wd, is_unity
                 );
                 if is_unity {
-                    unity_bridge::start_unity_monitor(
-                        app_handle.clone(),
-                        wd.clone(),
-                        &unity_monitor,
-                    )
-                    .await;
-                    unity_bridge::emit_plugin_status(&app_handle, &wd);
+                    match unity_project_registry_for_unity
+                        .active_ui_workspace_id()
+                        .and_then(|workspace_id| {
+                            workspace_id
+                                .ok_or_else(|| {
+                                    crate::error::AppError::new(
+                                        "unity_project.no_active_ui_project",
+                                        "No active Unity project is selected.",
+                                    )
+                                })
+                                .and_then(|id| unity_project_registry_for_unity.activated_runtime(&id))
+                        }) {
+                        Ok(runtime) => {
+                            unity_bridge::start_unity_monitor(
+                                app_handle.clone(),
+                                runtime.project_path.clone(),
+                                &runtime.unity_monitor,
+                            )
+                            .await;
+                            unity_bridge::emit_plugin_status(&app_handle, &runtime.project_path);
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "[Locus] warning: failed to start activated Unity project monitor: {error}"
+                            );
+                        }
+                    }
                 }
                 startup_for_unity.mark("unity_monitor_task_done");
             });
@@ -998,6 +1059,13 @@ pub fn run() {
             commands::apply_knowledge_proposal,
             commands::check_unity_connection,
             commands::check_unity_connection_status,
+            commands::list_unity_project_statuses,
+            commands::register_unity_project,
+            commands::open_unity_project_runtime,
+            commands::activate_unity_project,
+            commands::deactivate_unity_project,
+            commands::select_active_ui_unity_project,
+            commands::get_active_ui_unity_project,
             commands::get_unity_console_text,
             commands::check_unity_plugin,
             commands::install_unity_plugin,

@@ -190,7 +190,9 @@ describe("useAppBootstrap onboarding completion", () => {
 
     projectStoreMock = reactive({
       workingDir: "",
+      activeUiUnityProjectId: null,
       loadWorkingDir: vi.fn().mockResolvedValue(undefined),
+      loadUnityProjectStatuses: vi.fn().mockResolvedValue(undefined),
       loadRecentDirs: vi.fn().mockResolvedValue(undefined),
       checkUnityConnection: vi.fn().mockResolvedValue(undefined),
       checkUnityPlugin: vi.fn().mockResolvedValue(undefined),
@@ -268,6 +270,23 @@ describe("useAppBootstrap onboarding completion", () => {
     expect(modelStoreMock.loadLastEffort).toHaveBeenCalledTimes(1);
     expect(chatStoreMock.refreshSessions).toHaveBeenCalledTimes(1);
     expect(projectStoreMock.loadWorkingDir).toHaveBeenCalledTimes(1);
+  });
+
+  it("loads Unity project statuses before startup sessions", async () => {
+    const order: string[] = [];
+    projectStoreMock.loadUnityProjectStatuses.mockImplementation(async () => {
+      order.push("projects");
+    });
+    chatStoreMock.refreshSessions.mockImplementation(async () => {
+      order.push("sessions");
+    });
+
+    const useAppBootstrap = await loadUseAppBootstrap();
+    const { bootstrapCritical } = useAppBootstrap();
+
+    await bootstrapCritical();
+
+    expect(order.indexOf("projects")).toBeLessThan(order.indexOf("sessions"));
   });
 
   it("shows sticky startup banners when auth restore fails", async () => {

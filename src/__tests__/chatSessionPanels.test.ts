@@ -44,6 +44,7 @@ const displaySettingsState = vi.hoisted(() => ({
   fileChangePopoverEnabled: true,
   chatDiffReviewTarget: "inline",
   gitDiffReviewTarget: "inline",
+  sessionListScope: "activeProject" as "activeProject" | "allProjects",
   rightAlignUserMessages: false,
   compactToolCalls: true,
   hideThinkingBlocks: true,
@@ -75,6 +76,8 @@ const notificationStoreMocks = vi.hoisted(() => ({
 
 const projectStoreState = vi.hoisted(() => ({
   workingDir: "C:\\workspace\\locus",
+  activeUiUnityProjectId: "ws-a" as string | null,
+  newSessionWorkspaceId: "ws-b" as string | null,
 }));
 
 vi.mock("../services/session", () => sessionServiceMocks);
@@ -159,6 +162,7 @@ describe("chat session panel state", () => {
     displaySettingsState.changesAutoOpen = true;
     displaySettingsState.changesAutoClose = true;
     displaySettingsState.fileChangePopoverEnabled = true;
+    displaySettingsState.sessionListScope = "activeProject";
     displaySettingsState.rightAlignUserMessages = false;
     displaySettingsState.compactToolCalls = true;
     displaySettingsState.hideThinkingBlocks = true;
@@ -303,6 +307,64 @@ describe("chat session panel state", () => {
     expect(chatStore.activeSessionId).toBe("s1");
     expect(sessionServiceMocks.loadSession).toHaveBeenCalledWith("s1");
     expect(sessionServiceMocks.saveActiveSessionSelection).not.toHaveBeenCalled();
+  });
+
+  it("lists all project sessions through an explicit scope and keeps new chats bound to the working directory project", async () => {
+    const chatStore = useChatStore();
+    displaySettingsState.sessionListScope = "allProjects";
+    projectStoreState.activeUiUnityProjectId = "ws-a";
+    projectStoreState.newSessionWorkspaceId = "ws-b";
+
+    sessionServiceMocks.getActiveSessionSelection.mockResolvedValue(null);
+    sessionServiceMocks.listSessions.mockResolvedValue([
+      {
+        id: "s-b",
+        title: "Project B history",
+        agentId: null,
+        sessionType: "chat",
+        parentSessionId: null,
+        workspaceId: "ws-b",
+        updatedAt: 2,
+      },
+    ]);
+
+    await chatStore.refreshSessions();
+    await chatStore.sendMessage("new work");
+
+    expect(sessionServiceMocks.listSessions).toHaveBeenCalledWith(null, "allProjects");
+    expect(sessionServiceMocks.getActiveSessionSelection).toHaveBeenCalledWith("allProjects");
+    expect(sessionServiceMocks.chat).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: null,
+      text: "new work",
+      workspaceId: "ws-b",
+    }));
+  });
+
+  it("uses separate active session selection storage for all-project session lists", async () => {
+    const chatStore = useChatStore();
+    displaySettingsState.sessionListScope = "allProjects";
+    sessionServiceMocks.getActiveSessionSelection.mockResolvedValue("s-b");
+    sessionServiceMocks.listSessions.mockResolvedValue([
+      {
+        id: "s-b",
+        title: "Project B history",
+        agentId: null,
+        sessionType: "chat",
+        parentSessionId: null,
+        workspaceId: "ws-b",
+        updatedAt: 2,
+      },
+    ]);
+
+    await chatStore.refreshSessions();
+
+    expect(chatStore.activeSessionId).toBe("s-b");
+    expect(sessionServiceMocks.getActiveSessionSelection).toHaveBeenCalledWith("allProjects");
+    expect(sessionServiceMocks.saveActiveSessionSelection).not.toHaveBeenCalled();
+
+    await chatStore.selectSession("s-other");
+
+    expect(sessionServiceMocks.saveActiveSessionSelection).toHaveBeenCalledWith("s-other", "allProjects");
   });
 
   it("applies active session selection broadcasts without echoing persistence", async () => {

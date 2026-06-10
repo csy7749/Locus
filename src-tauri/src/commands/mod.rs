@@ -15,6 +15,7 @@ mod storage;
 mod system;
 mod undo;
 mod unity_embed;
+mod unity_project_runtime;
 mod unity_serialized_property;
 mod update;
 mod view;
@@ -30,6 +31,10 @@ pub const SESSION_CONTENT_CHANGED_EVENT: &str = "session-content-changed";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionContentChangedEvent {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<String>,
     pub working_dir: String,
     pub session_id: String,
     pub source: String,
@@ -43,13 +48,28 @@ fn unix_time_millis() -> i64 {
         .as_millis() as i64
 }
 
+pub(crate) fn project_event_identity(working_dir: &str) -> (Option<String>, Option<String>) {
+    let trimmed = working_dir.trim();
+    if trimmed.is_empty() {
+        return (None, None);
+    }
+    let project_path = dunce::canonicalize(trimmed)
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|_| trimmed.to_string());
+    let workspace_id = crate::workspace::load_or_create_workspace(&project_path).ok();
+    (workspace_id, Some(project_path))
+}
+
 pub fn emit_session_content_changed(
     app_handle: &AppHandle,
     working_dir: &str,
     session_id: &str,
     source: &str,
 ) {
+    let (workspace_id, project_path) = project_event_identity(working_dir);
     let event = SessionContentChangedEvent {
+        workspace_id,
+        project_path,
         working_dir: working_dir.to_string(),
         session_id: session_id.to_string(),
         source: source.to_string(),
@@ -393,6 +413,7 @@ pub use storage::*;
 pub use system::*;
 pub use undo::*;
 pub use unity_embed::*;
+pub use unity_project_runtime::*;
 pub use unity_serialized_property::*;
 pub use update::*;
 pub use view::*;

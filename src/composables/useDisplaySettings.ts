@@ -8,6 +8,7 @@ export type FontSlot = "ui" | "prose" | "monoInline" | "monoBlock" | "monoEditor
 export type DiffReviewTarget = "inline" | "window";
 export type ChatDiffReviewTarget = DiffReviewTarget;
 export type GitDiffReviewTarget = DiffReviewTarget;
+export type SessionListScope = "activeProject" | "allProjects";
 
 export interface DisplaySettings {
   /** Auto-open TODO panel when todos arrive */
@@ -22,6 +23,8 @@ export interface DisplaySettings {
   chatDiffReviewTarget: DiffReviewTarget;
   /** Default target for reviewing Git file diffs */
   gitDiffReviewTarget: DiffReviewTarget;
+  /** Scope used by the left session list */
+  sessionListScope: SessionListScope;
   /** Right-align user messages in the session transcript */
   rightAlignUserMessages: boolean;
   /** Collapse completed tool call batches in chat transcript */
@@ -87,6 +90,7 @@ const defaults: DisplaySettings = {
   fileChangePopoverEnabled: true,
   chatDiffReviewTarget: "window",
   gitDiffReviewTarget: "window",
+  sessionListScope: "activeProject",
   rightAlignUserMessages: true,
   compactToolCalls: true,
   hideThinkingBlocks: true,

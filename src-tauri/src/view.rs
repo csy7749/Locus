@@ -3885,7 +3885,12 @@ fn reusable_view_host_window_label(app_handle: &AppHandle, view_id: &str) -> Opt
 
 fn view_host_url_for_label(view_id: &str, label: &str) -> String {
     if label.starts_with(UNITY_EMBED_VIEW_WINDOW_LABEL_PREFIX) {
-        return crate::commands::unity_embed_host_url(&format!("view-{view_id}"), "view", view_id);
+        return crate::commands::unity_embed_host_url(
+            &format!("view-{view_id}"),
+            "view",
+            view_id,
+            None,
+        );
     }
     if is_view_host_pool_label(label) {
         return VIEW_HOST_POOL_ROUTE.to_string();
@@ -4760,7 +4765,8 @@ pub async fn open_view_unity_embed_window(
     let unity_status = ensure_view_open_requirements(working_dir, &detail.manifest).await?;
     let id = detail.summary.id.clone();
     let unity_label = unity_embed_view_window_label(&id);
-    let unity_host_url = crate::commands::unity_embed_host_url(&format!("view-{id}"), "view", &id);
+    let unity_host_url =
+        crate::commands::unity_embed_host_url(&format!("view-{id}"), "view", &id, None);
 
     if let Some(host_label) = registered_view_host_label(&id) {
         if app_handle.get_webview_window(&host_label).is_some() {
@@ -4813,6 +4819,7 @@ pub async fn open_view_unity_embed_window(
     let result = crate::commands::open_unity_embed_frontend_window_for_request(
         working_dir,
         crate::commands::UnityEmbedOpenFrontendWindowRequest {
+            workspace_id: None,
             window_id: Some(format!("view-{id}")),
             target_kind: "view".to_string(),
             target_id: Some(id.clone()),

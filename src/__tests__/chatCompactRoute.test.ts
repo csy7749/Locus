@@ -18,7 +18,7 @@ describe("chat compact route", () => {
     expect(richInput).toContain('emit("compact");');
     expect(richInput).not.toContain("getCompactInstruction");
     expect(chatView).toContain("compact: [];");
-    expect(chatView).toContain('@compact="emit(\'compact\')"');
+    expect(chatView).toContain('@compact="!sessionActionsDisabled && emit(\'compact\')"');
     expect(workspace).toContain('@compact="chatStore.compactSession"');
   });
 

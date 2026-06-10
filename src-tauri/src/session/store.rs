@@ -1846,10 +1846,11 @@ impl SessionStore {
             Ok(SessionSummary {
                 id: row.get(0)?,
                 title: row.get(1)?,
-                agent_id: row.get(2)?,
-                session_type: row.get(3)?,
-                parent_session_id: row.get(4)?,
-                updated_at: row.get(5)?,
+                workspace_id: row.get(2)?,
+                agent_id: row.get(3)?,
+                session_type: row.get(4)?,
+                parent_session_id: row.get(5)?,
+                updated_at: row.get(6)?,
                 runtime_status: None,
             })
         };
@@ -1860,9 +1861,9 @@ impl SessionStore {
                 let mut stmt = conn
                     .prepare(
                         if archived {
-                            "SELECT id, title, agent_id, session_type, parent_session_id, updated_at FROM sessions WHERE workspace_id = ?1 AND archived_at IS NOT NULL ORDER BY archived_at DESC, updated_at DESC"
+                            "SELECT id, title, workspace_id, agent_id, session_type, parent_session_id, updated_at FROM sessions WHERE workspace_id = ?1 AND archived_at IS NOT NULL ORDER BY archived_at DESC, updated_at DESC"
                         } else {
-                            "SELECT id, title, agent_id, session_type, parent_session_id, updated_at FROM sessions WHERE workspace_id = ?1 AND archived_at IS NULL ORDER BY updated_at DESC"
+                            "SELECT id, title, workspace_id, agent_id, session_type, parent_session_id, updated_at FROM sessions WHERE workspace_id = ?1 AND archived_at IS NULL ORDER BY updated_at DESC"
                         },
                     )
                     .map_err(|e| format!("Failed to prepare query: {}", e))?;
@@ -1877,9 +1878,9 @@ impl SessionStore {
                 let mut stmt = conn
                     .prepare(
                         if archived {
-                            "SELECT id, title, agent_id, session_type, parent_session_id, updated_at FROM sessions WHERE workspace_id IS NULL AND archived_at IS NOT NULL ORDER BY archived_at DESC, updated_at DESC"
+                            "SELECT id, title, workspace_id, agent_id, session_type, parent_session_id, updated_at FROM sessions WHERE workspace_id IS NULL AND archived_at IS NOT NULL ORDER BY archived_at DESC, updated_at DESC"
                         } else {
-                            "SELECT id, title, agent_id, session_type, parent_session_id, updated_at FROM sessions WHERE workspace_id IS NULL AND archived_at IS NULL ORDER BY updated_at DESC"
+                            "SELECT id, title, workspace_id, agent_id, session_type, parent_session_id, updated_at FROM sessions WHERE workspace_id IS NULL AND archived_at IS NULL ORDER BY updated_at DESC"
                         },
                     )
                     .map_err(|e| format!("Failed to prepare query: {}", e))?;
@@ -1890,6 +1891,50 @@ impl SessionStore {
                     sessions.push(row.map_err(|e| format!("Failed to read row: {}", e))?);
                 }
             }
+        }
+        Ok(sessions)
+    }
+
+    pub fn list_all_sessions(&self) -> Result<Vec<SessionSummary>, String> {
+        self.list_all_sessions_by_archive_state(false)
+    }
+
+    pub fn list_all_archived_sessions(&self) -> Result<Vec<SessionSummary>, String> {
+        self.list_all_sessions_by_archive_state(true)
+    }
+
+    fn list_all_sessions_by_archive_state(
+        &self,
+        archived: bool,
+    ) -> Result<Vec<SessionSummary>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                if archived {
+                    "SELECT id, title, workspace_id, agent_id, session_type, parent_session_id, updated_at FROM sessions WHERE archived_at IS NOT NULL ORDER BY archived_at DESC, updated_at DESC"
+                } else {
+                    "SELECT id, title, workspace_id, agent_id, session_type, parent_session_id, updated_at FROM sessions WHERE archived_at IS NULL ORDER BY updated_at DESC"
+                },
+            )
+            .map_err(|e| format!("Failed to prepare query: {}", e))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(SessionSummary {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    workspace_id: row.get(2)?,
+                    agent_id: row.get(3)?,
+                    session_type: row.get(4)?,
+                    parent_session_id: row.get(5)?,
+                    updated_at: row.get(6)?,
+                    runtime_status: None,
+                })
+            })
+            .map_err(|e| format!("Failed to query sessions: {}", e))?;
+
+        let mut sessions = Vec::new();
+        for row in rows {
+            sessions.push(row.map_err(|e| format!("Failed to read row: {}", e))?);
         }
         Ok(sessions)
     }
@@ -5243,6 +5288,46 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read schema version");
         assert_eq!(version, SessionStore::SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn list_all_sessions_includes_every_workspace_by_recent_update() {
+        let dir = tempdir().expect("tempdir");
+        let store = SessionStore::new(dir.path()).expect("initialize store");
+        {
+            let conn = store.conn.lock().expect("lock conn");
+            conn.execute(
+                "INSERT INTO sessions (id, title, workspace_id, session_type, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 'chat', ?4, ?5)",
+                params!["ws-a-session", "A", "ws-a", 1_i64, 10_i64],
+            )
+            .expect("insert workspace A session");
+            conn.execute(
+                "INSERT INTO sessions (id, title, workspace_id, session_type, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 'chat', ?4, ?5)",
+                params!["ws-b-session", "B", "ws-b", 1_i64, 30_i64],
+            )
+            .expect("insert workspace B session");
+            conn.execute(
+                "INSERT INTO sessions (id, title, workspace_id, session_type, created_at, updated_at)
+                 VALUES (?1, ?2, NULL, 'chat', ?3, ?4)",
+                params!["global-session", "Global", 1_i64, 20_i64],
+            )
+            .expect("insert global session");
+        }
+
+        let sessions = store.list_all_sessions().expect("list all sessions");
+
+        assert_eq!(
+            sessions
+                .iter()
+                .map(|session| session.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ws-b-session", "global-session", "ws-a-session"],
+        );
+        assert_eq!(sessions[0].workspace_id.as_deref(), Some("ws-b"));
+        assert_eq!(sessions[1].workspace_id.as_deref(), None);
+        assert_eq!(sessions[2].workspace_id.as_deref(), Some("ws-a"));
     }
 
     #[test]

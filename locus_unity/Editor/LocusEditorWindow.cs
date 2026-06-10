@@ -93,6 +93,7 @@ namespace Locus
         private volatile bool _assetDragStateSendInFlight;
         private string _connectedPipeName = "";
         [SerializeField] private string _windowId = DefaultWindowId;
+        [SerializeField] private string _workspaceId = "";
         [SerializeField] private string _targetKind = DefaultTargetKind;
         [SerializeField] private string _targetId = "";
         [SerializeField] private string _windowTitle = "Locus";
@@ -104,6 +105,7 @@ namespace Locus
         {
             public string type;
             public string windowId;
+            public string workspaceId;
             public string targetKind;
             public string targetId;
             public string title;
@@ -123,6 +125,7 @@ namespace Locus
         internal sealed class OpenFrontendWindowRequest
         {
             public string windowId;
+            public string workspaceId;
             public string targetKind;
             public string targetId;
             public string title;
@@ -189,7 +192,7 @@ namespace Locus
         public static void OpenWindow()
         {
             LocusEditorWindow window = GetWindow<LocusEditorWindow>();
-            window.ConfigureFrontendWindow(DefaultWindowId, TargetKindSession, "", "Locus");
+            window.ConfigureFrontendWindow(DefaultWindowId, "", TargetKindSession, "", "Locus");
             window.minSize = new Vector2(360f, 420f);
             window.Show();
             if (OverlaySyncEnabled)
@@ -201,6 +204,7 @@ namespace Locus
             OpenFrontendWindowRequest request = ParseOpenFrontendWindowRequest(json);
             LocusEditorWindow window = OpenFrontendWindow(
                 request.windowId,
+                request.workspaceId,
                 request.targetKind,
                 request.targetId,
                 request.title);
@@ -209,6 +213,7 @@ namespace Locus
 
         internal static LocusEditorWindow OpenFrontendWindow(
             string windowId,
+            string workspaceId,
             string targetKind,
             string targetId,
             string title)
@@ -236,6 +241,7 @@ namespace Locus
 
             window.ConfigureFrontendWindow(
                 normalizedWindowId,
+                workspaceId,
                 normalizedTargetKind,
                 normalizedTargetId,
                 normalizedTitle);
@@ -407,11 +413,13 @@ namespace Locus
 
         private void ConfigureFrontendWindow(
             string windowId,
+            string workspaceId,
             string targetKind,
             string targetId,
             string title)
         {
             _windowId = NormalizeWindowId(windowId);
+            _workspaceId = (workspaceId ?? "").Trim();
             _targetKind = NormalizeTargetKind(targetKind);
             _targetId = (targetId ?? "").Trim();
             _windowTitle = NormalizeWindowTitle(title, _targetKind, _targetId);
@@ -423,6 +431,7 @@ namespace Locus
         private void EnsureWindowIdentity()
         {
             _windowId = NormalizeWindowId(_windowId);
+            _workspaceId = (_workspaceId ?? "").Trim();
             _targetKind = NormalizeTargetKind(_targetKind);
             _targetId = (_targetId ?? "").Trim();
             _windowTitle = NormalizeWindowTitle(_windowTitle, _targetKind, _targetId);
@@ -565,6 +574,7 @@ namespace Locus
             {
                 type = "assetDrop",
                 windowId = _windowId,
+                workspaceId = _workspaceId,
                 targetKind = _targetKind,
                 targetId = _targetId,
                 title = _windowTitle,
@@ -607,6 +617,7 @@ namespace Locus
             {
                 type = "assetDrag",
                 windowId = _windowId,
+                workspaceId = _workspaceId,
                 targetKind = _targetKind,
                 targetId = _targetId,
                 title = _windowTitle,
@@ -729,6 +740,7 @@ namespace Locus
             {
                 type = type,
                 windowId = _windowId,
+                workspaceId = _workspaceId,
                 targetKind = _targetKind,
                 targetId = _targetId,
                 title = _windowTitle,

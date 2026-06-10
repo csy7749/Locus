@@ -83,6 +83,56 @@ describe("View sidebar settings", () => {
     expect(en).toContain('"view.action.reveal": "Show in File Explorer"');
   });
 
+  it("lets display settings control whether the session list follows the active project", () => {
+    const displaySettings = read("src/composables/useDisplaySettings.ts");
+    const displayPanel = read("src/components/settings/DisplaySettings.vue");
+    const chatStore = read("src/stores/chat.ts");
+    const chatView = read("src/components/ChatView.vue");
+    const chatWorkspaceView = read("src/components/ChatWorkspaceView.vue");
+    const sessionPanel = read("src/components/chat/SessionPanel.vue");
+    const compactPicker = read("src/components/chat/SessionCompactPicker.vue");
+    const service = read("src/services/session.ts");
+    const command = read("src-tauri/src/commands/session.rs");
+    const zh = read("src/language/zh.json");
+    const en = read("src/language/en.json");
+
+    expect(displaySettings).toContain('export type SessionListScope = "activeProject" | "allProjects";');
+    expect(displaySettings).toContain("sessionListScope: SessionListScope;");
+    expect(displaySettings).toContain('sessionListScope: "activeProject",');
+    expect(displayPanel).toContain("settings.display.sessionListScope");
+    expect(displayPanel).toContain("settings.display.sessionListActiveProject");
+    expect(displayPanel).toContain("settings.display.sessionListAllProjects");
+    expect(chatStore).toContain("currentSessionListScope()");
+    expect(chatStore).toContain("sessionService.listSessions(sessionListWorkspaceId(), scope)");
+    expect(chatStore).toContain("sessionService.getActiveSessionSelection(scope)");
+    expect(chatStore).toContain("sessionService.saveActiveSessionSelection(sessionId, currentSessionListScope())");
+    expect(service).toContain("export type SessionListScope =");
+    expect(service).toContain("listScope: scope");
+    expect(service).toContain("selectionScope: scope");
+    expect(command).toContain("list_scope: Option<String>");
+    expect(command).toContain("selection_scope: Option<String>");
+    expect(chatView).toContain(":show-project-labels=\"displaySettings.sessionListScope === 'allProjects'\"");
+    expect(chatView).toContain("showInputCurrentProjectName");
+    expect(chatView).toContain("chat.input.sessionProjectTitle");
+    expect(chatWorkspaceView).toContain("activeSessionProjectRuntimeActive");
+    expect(chatWorkspaceView).toContain("activeSessionProjectName");
+    expect(chatWorkspaceView).toContain(":current-project-name=\"activeSessionProjectName\"");
+    expect(sessionPanel).toContain("showProjectLabels?: boolean;");
+    expect(sessionPanel).toContain("sessionProjectLabel");
+    expect(sessionPanel).not.toContain("|| workspaceId");
+    expect(compactPicker).toContain("showProjectLabels?: boolean;");
+    expect(compactPicker).toContain("sessionProjectLabel");
+    expect(compactPicker).not.toContain("|| workspaceId");
+    expect(zh).toContain('"settings.display.sessionListScope": "会话列表范围"');
+    expect(zh).toContain('"settings.display.sessionListActiveProject": "跟随当前项目"');
+    expect(zh).toContain('"settings.display.sessionListAllProjects": "显示全部会话"');
+    expect(zh).toContain('"chat.input.sessionProjectTitle": "会话项目：{0}"');
+    expect(en).toContain('"settings.display.sessionListScope": "Session list scope"');
+    expect(en).toContain('"settings.display.sessionListActiveProject": "Follow active project"');
+    expect(en).toContain('"settings.display.sessionListAllProjects": "Show all sessions"');
+    expect(en).toContain('"chat.input.sessionProjectTitle": "Session project: {0}"');
+  });
+
   it("renders View list icons from manifest icon configuration", () => {
     const icons = read("src/components/icons/locusViewIcons.ts");
     const sessionPanel = read("src/components/chat/SessionPanel.vue");

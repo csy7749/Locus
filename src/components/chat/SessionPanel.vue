@@ -121,6 +121,8 @@ const props = defineProps<{
   sessionPanelWidth: number;
   workingDir?: string;
   showViews?: boolean;
+  showProjectLabels?: boolean;
+  newSessionDisabled?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -160,6 +162,7 @@ const projectStore = useProjectStore();
 const newChatTitle = computed(() =>
   t("chat.session.newWithShortcut", formatShortcut(shortcutState.newChat)),
 );
+const newSessionDisabled = computed(() => props.newSessionDisabled === true);
 const viewSummaries = ref<ViewPackageSummary[]>([]);
 const viewFolders = ref<ViewFolderSummary[]>([]);
 const viewTreeOrder = ref<string[]>([]);
@@ -1265,6 +1268,20 @@ function rowLabel(node: SessionTreeNode): string {
   return node.title || t("chat.session.newSession");
 }
 
+function projectNameFromPath(projectPath: string): string {
+  const normalized = projectPath.replace(/\\/g, "/").replace(/\/+$/g, "");
+  return normalized.split("/").filter(Boolean).pop() ?? projectPath;
+}
+
+function sessionProjectLabel(session: SessionSummary | undefined): string {
+  if (!props.showProjectLabels) return "";
+  const workspaceId = session?.workspaceId?.trim();
+  if (!workspaceId) return t("chat.session.unscopedProject");
+  const project = projectStore.unityProjects.get(workspaceId);
+  return project?.name?.trim()
+    || (project?.projectPath ? projectNameFromPath(project.projectPath) : "");
+}
+
 function isSubagentNode(node: SessionTreeNode): boolean {
   return node.kind === "session" && node.sessionType === "chat" && !!node.parentSessionId;
 }
@@ -1496,6 +1513,7 @@ async function ctxOpenSessionInUnity() {
   closeCtxMenu();
   try {
     await openUnityEmbeddedSessionWindow({
+      workspaceId: projectStore.activeUiUnityProjectId,
       sessionId: session.id,
       title: session.title || session.id,
     });
@@ -1541,9 +1559,10 @@ function ctxArchive() {
       <button
         type="button"
         class="sp-session-item sp-new-session-item"
-        :class="{ active: activeSessionId === null }"
+        :class="{ active: activeSessionId === null, disabled: newSessionDisabled }"
         :title="newChatTitle"
-        @click="emit('newChat')"
+        :disabled="newSessionDisabled"
+        @click="!newSessionDisabled && emit('newChat')"
       >
         <span class="sp-expand-spacer">
           <span class="sp-new-session-plus" aria-hidden="true">+</span>
@@ -1622,6 +1641,12 @@ function ctxArchive() {
                   :class="`is-${row.node.status}`"
                 >
                   {{ sessionStatusLabel(row.node.status) }}
+                </span>
+                <span
+                  v-if="row.node.kind === 'session' && sessionProjectLabel(row.node.session)"
+                  class="sp-session-project"
+                >
+                  {{ sessionProjectLabel(row.node.session) }}
                 </span>
                 <span class="sp-session-time">{{ formatSessionTime(row.node.updatedAt) }}</span>
                 <button
@@ -2694,6 +2719,15 @@ function ctxArchive() {
   font-size: 12px;
   color: var(--text-secondary);
   transition: opacity 0.12s ease;
+}
+
+.sp-session-project {
+  max-width: 86px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-secondary);
 }
 
 .sp-row-archive-btn {

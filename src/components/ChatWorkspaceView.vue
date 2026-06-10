@@ -49,6 +49,46 @@ const isVerticalLayout = computed(() => props.layoutMode === "vertical");
 const showAssistantSidebar = computed(() =>
   props.active && (chatStore.showTodoPanel || chatChangesStore.currentPanelVisible),
 );
+const activeSessionProjectRuntimeActive = computed(() => {
+  const sessionId = chatStore.activeSessionId;
+  if (!sessionId) return projectStore.newSessionRuntimeActive;
+  const session = chatStore.sessions.find((item) => item.id === sessionId);
+  const workspaceId = session?.workspaceId?.trim();
+  if (!workspaceId) return projectStore.newSessionRuntimeActive;
+  const project = projectStore.unityProjects.get(workspaceId);
+  return project ? project.activated : true;
+});
+
+function projectNameFromPath(projectPath: string): string {
+  const normalized = projectPath.replace(/\\/g, "/").replace(/\/+$/g, "");
+  return normalized.split("/").filter(Boolean).pop() ?? "";
+}
+
+function projectNameForWorkspace(workspaceId: string): string {
+  const project = projectStore.unityProjects.get(workspaceId);
+  if (!project && workspaceId === projectStore.activeUiUnityProjectId) {
+    return activeUiProjectName.value;
+  }
+  return project?.name?.trim()
+    || (project?.projectPath ? projectNameFromPath(project.projectPath) : "");
+}
+
+const activeUiProjectName = computed(() =>
+  projectStore.activeUiUnityProject?.name?.trim()
+  || projectNameFromPath(projectStore.selectedUnityProjectPath),
+);
+const newSessionProjectName = computed(() =>
+  projectStore.newSessionUnityProject?.name?.trim()
+  || projectNameFromPath(projectStore.workingDir),
+);
+
+const activeSessionProjectName = computed(() => {
+  const sessionId = chatStore.activeSessionId;
+  if (!sessionId) return newSessionProjectName.value;
+  const session = chatStore.sessions.find((item) => item.id === sessionId);
+  const workspaceId = session?.workspaceId?.trim();
+  return workspaceId ? projectNameForWorkspace(workspaceId) : "";
+});
 const ASSISTANT_PANEL_MIN_CHAT_WIDTH = 560;
 const ASSISTANT_SIDEBAR_SIDE_MAX_WIDTH = 520;
 const ASSISTANT_SIDEBAR_RESIZE_HANDLE_WIDTH = 3;
@@ -383,16 +423,19 @@ onUnmounted(() => {
       :pending-tool-confirms="chatStore.pendingToolConfirms"
       :sessions="chatStore.sessions"
       :active-session-id="chatStore.activeSessionId"
-      :unity-connected="projectStore.unityConnected"
+      :unity-connected="projectStore.selectedUnityConnected"
       :unity-plugin-status="projectStore.pluginToast"
       :unity-plugin-installing="projectStore.pluginInstalling"
       :unity-launching="projectStore.unityLaunching"
       :unity-launch-state="projectStore.unityLaunchState"
-      :unity-connection-status="projectStore.unityConnectionStatus"
+      :unity-connection-status="projectStore.selectedUnityConnectionStatus"
       :working-dir="projectStore.workingDir"
       :scan-phase="projectStore.scanPhase"
       :last-scan-stats="projectStore.lastScanStats"
-      :is-unity-project="projectStore.isUnityProject"
+      :is-unity-project="!!projectStore.workingDir.trim()"
+      :project-runtime-active="activeSessionProjectRuntimeActive"
+      :new-session-runtime-active="projectStore.newSessionRuntimeActive"
+      :current-project-name="activeSessionProjectName"
       :skills="skillItems"
       :streaming-session-ids="chatStore.streamingSessionIds"
       :undoable-message-ids="chatStore.undoableMessageIds"

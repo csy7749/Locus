@@ -42,7 +42,7 @@ describe("chat responsive layout", () => {
     expect(picker).toContain('class="session-compact-dropdown"');
     expect(picker).toContain('class="session-compact-option"');
     expect(sessionPanel).toContain('class="sp-session-item sp-new-session-item"');
-    expect(sessionPanel).toContain(":class=\"{ active: activeSessionId === null }\"");
+    expect(sessionPanel).toContain(":class=\"{ active: activeSessionId === null, disabled: newSessionDisabled }\"");
     expect(sessionPanel).toContain("chat.session.createNew");
     expect(sessionPanel).toContain("v-for=\"row in visibleRows\"");
     expect(sessionPanel).toContain("const visibleRows = computed<VisibleTreeRow[]>");

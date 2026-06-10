@@ -12,6 +12,7 @@ import type {
   PluginStatus,
   ScanStats,
   UnityConnectionStatus,
+  UnityProjectStatus,
 } from "../types";
 
 type PluginNoticeStatus = "missing" | "outdated";
@@ -25,6 +26,8 @@ const UNITY_LAUNCH_WAIT_TIMEOUT_MS = 120_000;
 export const useProjectStore = defineStore("project", () => {
   const workingDir = ref("");
   const recentDirs = ref<string[]>([]);
+  const unityProjects = ref(new Map<string, UnityProjectStatus>());
+  const activeUiUnityProjectId = ref<string | null>(null);
   const unityConnected = ref(false);
   const unityConnectionStatus = ref<UnityConnectionStatus | null>(null);
   const scanPhase = ref<AssetDbScanEvent | null>(null);
@@ -38,6 +41,39 @@ export const useProjectStore = defineStore("project", () => {
   let unityLaunchWaitStartedAt = 0;
 
   const isUnityProject = computed(() => workingDir.value.length > 0);
+  const unityProjectList = computed(() => Array.from(unityProjects.value.values()));
+  const activeUiUnityProject = computed(() => {
+    const id = activeUiUnityProjectId.value;
+    return id ? unityProjects.value.get(id) ?? null : null;
+  });
+  const activeUiWorkspaceId = computed(() => activeUiUnityProjectId.value);
+  const workingDirUnityProject = computed(() => {
+    const normalizedWorkingDir = normalizeProjectPath(workingDir.value);
+    if (!normalizedWorkingDir) return null;
+    return unityProjectList.value.find((project) =>
+      normalizeProjectPath(project.projectPath) === normalizedWorkingDir) ?? null;
+  });
+  const newSessionUnityProject = computed(() => {
+    const project = workingDirUnityProject.value;
+    return project?.activated ? project : null;
+  });
+  const newSessionWorkspaceId = computed(() => newSessionUnityProject.value?.workspaceId ?? null);
+  const newSessionRuntimeActive = computed(() => !!newSessionWorkspaceId.value);
+  const selectedUnityProjectPath = computed(() =>
+    activeUiUnityProject.value?.projectPath ?? workingDir.value,
+  );
+  const selectedUnityConnectionStatus = computed(() =>
+    activeUiUnityProject.value?.connectionStatus ?? unityConnectionStatus.value,
+  );
+  const selectedUnityConnected = computed(() =>
+    activeUiUnityProject.value?.bridgeConnected ?? unityConnected.value,
+  );
+  const activeUiUnityProjectActivated = computed(() =>
+    activeUiUnityProject.value?.activated ?? !!workingDir.value.trim(),
+  );
+  const activeUiUnityProjectInactive = computed(() =>
+    !!activeUiUnityProject.value && !activeUiUnityProject.value.activated,
+  );
 
   function pluginStatusLabel(status: PluginNoticeStatus): string {
     return status === "missing" ? t("app.plugin.notInstalled") : t("app.plugin.needUpdate");
@@ -86,6 +122,7 @@ export const useProjectStore = defineStore("project", () => {
 
   function setUnityConnectionStatus(status: UnityConnectionStatus) {
     unityConnectionStatus.value = status;
+    upsertUnityProjectFromConnectionStatus(status);
     setUnityConnected(status.connected);
     const hook = status.backgroundHook;
     const notificationStore = useNotificationStore();
@@ -146,6 +183,79 @@ export const useProjectStore = defineStore("project", () => {
     };
   }
 
+  function isWorkspaceIdLikeProjectName(name: string, workspaceId: string): boolean {
+    const normalizedName = name.trim().toLowerCase();
+    const normalizedWorkspaceId = workspaceId.trim().toLowerCase();
+    return normalizedName === normalizedWorkspaceId || /^unity-[a-z0-9]+$/i.test(normalizedName);
+  }
+
+  function projectDisplayName(status: UnityProjectStatus): string {
+    const name = status.name.trim();
+    if (name && !isWorkspaceIdLikeProjectName(name, status.workspaceId)) return name;
+    return projectNameFromPath(status.projectPath);
+  }
+
+  function normalizeUnityProjectStatus(status: UnityProjectStatus): UnityProjectStatus {
+    return {
+      ...status,
+      name: projectDisplayName(status),
+    };
+  }
+
+  function replaceUnityProjects(statuses: UnityProjectStatus[]) {
+    const entries = statuses.map((status) => {
+      const normalized = normalizeUnityProjectStatus(status);
+      return [normalized.workspaceId, normalized] as const;
+    });
+    unityProjects.value = new Map(entries);
+  }
+
+  function upsertUnityProjectStatus(status: UnityProjectStatus) {
+    const normalized = normalizeUnityProjectStatus(status);
+    unityProjects.value = new Map(unityProjects.value).set(normalized.workspaceId, normalized);
+  }
+
+  function eventWorkspaceId(event: { workspaceId?: string | null }): string | null {
+    return event.workspaceId?.trim() || null;
+  }
+
+  function isActiveUiProjectEvent(event: { workspaceId?: string | null }): boolean {
+    const workspaceId = eventWorkspaceId(event);
+    return !workspaceId || workspaceId === activeUiUnityProjectId.value;
+  }
+
+  function upsertUnityProjectFromConnectionStatus(status: UnityConnectionStatus) {
+    const workspaceId = status.workspaceId?.trim();
+    if (!workspaceId) return;
+    const projectPath = status.projectPath.trim();
+    if (!projectPath) return;
+    const existing = unityProjects.value.get(workspaceId);
+    const existingName = existing?.name?.trim() ?? "";
+    upsertUnityProjectStatus({
+      workspaceId,
+      projectPath,
+      name: existingName && !isWorkspaceIdLikeProjectName(existingName, workspaceId)
+        ? existingName
+        : projectNameFromPath(projectPath),
+      activated: existing?.activated ?? false,
+      editorOpen: status.editorProcessState === "running",
+      bridgeConnected: status.connected,
+      editorStatus: status.editorStatus,
+      editorProcessState: status.editorProcessState,
+      lastSeenAtMs: status.checkedAtMs,
+      connectionStatus: status,
+    });
+  }
+
+  function projectNameFromPath(projectPath: string): string {
+    const normalized = projectPath.replace(/\\/g, "/").replace(/\/+$/g, "");
+    return normalized.split("/").filter(Boolean).pop() ?? projectPath;
+  }
+
+  function normalizeProjectPath(projectPath: string): string {
+    return projectPath.replace(/\\/g, "/").replace(/\/+$/g, "").toLowerCase();
+  }
+
   function shouldAutoBuildFromLightStatus(status: AssetDbLightStatus): boolean {
     if (!workingDir.value.trim()) return false;
     if (scanInFlight || isScanRunning(scanPhase.value)) return false;
@@ -163,6 +273,48 @@ export const useProjectStore = defineStore("project", () => {
     }
   }
 
+  async function loadUnityProjectStatuses() {
+    try {
+      const statuses = await unityService.listUnityProjectStatuses();
+      replaceUnityProjects(statuses);
+      const active = await unityService.getActiveUiUnityProject();
+      activeUiUnityProjectId.value = active.workspaceId?.trim() || null;
+    } catch (e) {
+      console.error("list_unity_project_statuses failed:", e);
+    }
+  }
+
+  async function registerUnityProject(path: string) {
+    const status = await unityService.registerUnityProject(path);
+    upsertUnityProjectStatus(status);
+    return status;
+  }
+
+  async function openUnityProjectRuntime(path: string) {
+    const status = await unityService.openUnityProjectRuntime(path);
+    upsertUnityProjectStatus(status);
+    return status;
+  }
+
+  async function activateUnityProject(workspaceId: string) {
+    const status = await unityService.activateUnityProject(workspaceId);
+    upsertUnityProjectStatus(status);
+    return status;
+  }
+
+  async function deactivateUnityProject(workspaceId: string) {
+    const status = await unityService.deactivateUnityProject(workspaceId);
+    upsertUnityProjectStatus(status);
+    return status;
+  }
+
+  async function selectActiveUiUnityProject(workspaceId: string | null) {
+    const result = await unityService.selectActiveUiUnityProject(workspaceId);
+    activeUiUnityProjectId.value = result.workspaceId?.trim() || null;
+    scanPhase.value = null;
+    lastScanStats.value = null;
+  }
+
   async function setWorkingDir(path: string): Promise<string> {
     const result = await projectService.setWorkingDir(path);
     resetUnityLaunchState();
@@ -171,6 +323,7 @@ export const useProjectStore = defineStore("project", () => {
     scanPhase.value = null;
     lastScanStats.value = null;
     scanInFlight = false;
+    await loadUnityProjectStatuses();
     return result;
   }
 
@@ -308,6 +461,8 @@ export const useProjectStore = defineStore("project", () => {
   function resetWorkspaceState() {
     workingDir.value = "";
     recentDirs.value = [];
+    unityProjects.value = new Map();
+    activeUiUnityProjectId.value = null;
     unityConnected.value = false;
     unityConnectionStatus.value = null;
     scanPhase.value = null;
@@ -327,6 +482,7 @@ export const useProjectStore = defineStore("project", () => {
   }
 
   function handleScanEvent(event: AssetDbScanEvent) {
+    if (!isActiveUiProjectEvent(event)) return;
     scanPhase.value = event;
     if (event.phase === "done") {
       scanInFlight = false;
@@ -345,6 +501,7 @@ export const useProjectStore = defineStore("project", () => {
   }
 
   function handlePluginStatus(status: PluginStatus) {
+    if (!isActiveUiProjectEvent(status)) return;
     const s = status.status;
     if (s === "missing" || s === "outdated") {
       setPluginToast(s);
@@ -356,6 +513,20 @@ export const useProjectStore = defineStore("project", () => {
   return {
     workingDir,
     recentDirs,
+    unityProjects,
+    unityProjectList,
+    activeUiUnityProjectId,
+    activeUiWorkspaceId,
+    activeUiUnityProject,
+    workingDirUnityProject,
+    newSessionUnityProject,
+    newSessionWorkspaceId,
+    newSessionRuntimeActive,
+    selectedUnityProjectPath,
+    selectedUnityConnectionStatus,
+    selectedUnityConnected,
+    activeUiUnityProjectActivated,
+    activeUiUnityProjectInactive,
     unityConnected,
     unityConnectionStatus,
     scanPhase,
@@ -366,6 +537,12 @@ export const useProjectStore = defineStore("project", () => {
     unityLaunching,
     isUnityProject,
     loadWorkingDir,
+    loadUnityProjectStatuses,
+    registerUnityProject,
+    openUnityProjectRuntime,
+    activateUnityProject,
+    deactivateUnityProject,
+    selectActiveUiUnityProject,
     setWorkingDir,
     loadRecentDirs,
     removeRecentDir,

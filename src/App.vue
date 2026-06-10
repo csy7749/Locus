@@ -28,7 +28,7 @@ import AppUpdateModal from "./components/AppUpdateModal.vue";
 
 import { provideDiffOverlay } from "./composables/useDiffOverlay";
 import { initTheme } from "./composables/useTheme";
-import { initFonts } from "./composables/useDisplaySettings";
+import { initFonts, useDisplaySettings } from "./composables/useDisplaySettings";
 import { isKnowledgeDownloadWindowLocation } from "./services/knowledgeDownloadWindow";
 import { isKnowledgeLexicalProgressWindowLocation } from "./services/knowledgeLexicalProgressWindow";
 import { isFeishuReferenceImportWindowLocation } from "./services/feishuReferenceImportWindow";
@@ -46,11 +46,13 @@ import {
   startCurrentWindowDragging,
 } from "./services/tauriRuntime";
 import { markStartupPhase } from "./services/startupPerf";
+import type { UnityProjectStatus } from "./types";
 const isUnityEmbedTestWindow = window.location.pathname === "/unity-embed-test";
 const isUnityEmbedWindow = !isUnityEmbedTestWindow && window.location.pathname === "/unity-embed";
 const unityEmbedParams = new URLSearchParams(window.location.search);
 const unityEmbedTarget = unityEmbedParams.get("target") || "session";
 const unityEmbedTargetId = unityEmbedParams.get("id") || "";
+const unityEmbedWorkspaceId = unityEmbedParams.get("workspaceId") || "";
 const isUnityEmbedViewWindow = isUnityEmbedWindow && unityEmbedTarget === "view";
 const isKnowledgeDownloadWindow = isKnowledgeDownloadWindowLocation();
 const isKnowledgeLexicalProgressWindow = isKnowledgeLexicalProgressWindowLocation();
@@ -105,6 +107,7 @@ const projectStore = useProjectStore();
 const chatStore = useChatStore();
 const notificationStore = useNotificationStore();
 const appUpdateStore = useAppUpdateStore();
+const { state: displaySettings } = useDisplaySettings();
 const unityEmbedBootstrapped = ref(false);
 const unityEmbedBootstrapError = ref<string | null>(null);
 const KNOWLEDGE_RUNTIME_LOADING_OPERATION = "knowledgeEmbeddingRuntimeLoading";
@@ -289,10 +292,21 @@ const recentDirContextMenu = ref<RecentDirContextMenu | null>(null);
 const pendingWorkspaceSwitchPath = ref<string | null>(null);
 const switchingWorkspacePath = ref<string | null>(null);
 const workspaceSwitchBusy = ref(false);
+const workspaceProjectBusyId = ref<string | null>(null);
 const appCloseConfirmOpen = ref(false);
 const appCloseBusy = ref(false);
 const appCloseRunningTaskCount = ref(0);
 const runningSessionCount = computed(() => chatStore.streamingSessionIds.size);
+const workspaceUnityProjects = computed(() =>
+  [...projectStore.unityProjectList].sort((left, right) => left.name.localeCompare(right.name)),
+);
+const workspaceCurrentUnityProject = computed(() =>
+  workspaceUnityProjects.value.find((project) => isWorkspaceProjectCurrent(project)) ?? null,
+);
+const workspaceRuntimeStatusText = computed(() => {
+  const project = workspaceCurrentUnityProject.value;
+  return project ? workspaceProjectStatusText(project) : "";
+});
 const workspaceSwitchTargetName = computed(() =>
   pendingWorkspaceSwitchPath.value ? shortDir(pendingWorkspaceSwitchPath.value) : "",
 );
@@ -304,7 +318,8 @@ const workspaceButtonTitle = computed(() => {
       switchingWorkspacePath.value,
     );
   }
-  return projectStore.workingDir || t("app.dir.notSetTitle");
+  const dirTitle = projectStore.workingDir || t("app.dir.notSetTitle");
+  return workspaceRuntimeStatusText.value ? `${dirTitle}\n${workspaceRuntimeStatusText.value}` : dirTitle;
 });
 const workspaceButtonLabel = computed(() =>
   switchingWorkspacePath.value ? t("app.dir.switching") : shortDir(projectStore.workingDir),
@@ -361,6 +376,28 @@ function parentPath(dir: string): string {
   const parts = dir.replace(/\\/g, "/").split("/").filter(Boolean);
   if (parts.length <= 1) return "";
   return parts.slice(0, -1).join("/");
+}
+
+function normalizeWorkspacePath(dir: string): string {
+  return dir.trim().replace(/\\/g, "/").replace(/\/+$/g, "").toLowerCase();
+}
+
+function isWorkspaceProjectCurrent(project: UnityProjectStatus): boolean {
+  return normalizeWorkspacePath(project.projectPath) === normalizeWorkspacePath(projectStore.workingDir);
+}
+
+function workspaceProjectStatusText(project: UnityProjectStatus): string {
+  const runtime = project.activated ? "已激活" : "未激活";
+  const editor = project.editorOpen ? "Editor 运行" : "Editor 未运行";
+  const bridge = project.bridgeConnected ? "Bridge 已连接" : "Bridge 未连接";
+  return `${runtime} · ${editor} · ${bridge}`;
+}
+
+function workspaceProjectStatusClass(project: UnityProjectStatus): string {
+  if (project.activated) return "is-activated";
+  if (project.bridgeConnected) return "is-connected";
+  if (project.editorOpen) return "is-editor-open";
+  return "is-inactive";
 }
 
 function toggleDirDropdown() {
@@ -488,6 +525,59 @@ async function selectRecentDir(dir: string) {
   closeRecentDirContextMenu();
   showDirDropdown.value = false;
   await requestWorkingDirChange(dir);
+}
+
+async function selectWorkspaceProject(project: UnityProjectStatus) {
+  if (workspaceSwitchBusy.value) return;
+  closeRecentDirContextMenu();
+  showDirDropdown.value = false;
+  await requestWorkingDirChange(project.projectPath);
+}
+
+async function refreshSessionsAfterWorkspaceProjectAction(previousWorkspaceId: string | null) {
+  if (
+    displaySettings.sessionListScope !== "allProjects"
+    && previousWorkspaceId !== projectStore.newSessionWorkspaceId
+  ) {
+    chatStore.newChat({ persistSelection: false });
+  }
+  await chatStore.refreshSessions();
+}
+
+async function runWorkspaceProjectAction(
+  project: UnityProjectStatus,
+  action: () => Promise<void>,
+) {
+  if (workspaceProjectBusyId.value) return;
+  workspaceProjectBusyId.value = project.workspaceId;
+  try {
+    await action();
+  } catch (error) {
+    const err = normalizeAppError(error);
+    notificationStore.addNotice("error", err.message, {
+      code: err.code,
+      operation: "workspaceUnityProjectMenu",
+      skipConsoleLog: true,
+    });
+  } finally {
+    workspaceProjectBusyId.value = null;
+  }
+}
+
+async function activateWorkspaceProject(project: UnityProjectStatus) {
+  await runWorkspaceProjectAction(project, async () => {
+    const previousWorkspaceId = projectStore.newSessionWorkspaceId;
+    await projectStore.activateUnityProject(project.workspaceId);
+    await refreshSessionsAfterWorkspaceProjectAction(previousWorkspaceId);
+  });
+}
+
+async function deactivateWorkspaceProject(project: UnityProjectStatus) {
+  await runWorkspaceProjectAction(project, async () => {
+    const previousWorkspaceId = projectStore.newSessionWorkspaceId;
+    await projectStore.deactivateUnityProject(project.workspaceId);
+    await refreshSessionsAfterWorkspaceProjectAction(previousWorkspaceId);
+  });
 }
 
 async function browseFromDropdown() {
@@ -699,6 +789,10 @@ onMounted(async () => {
       markStartupPhase("unity_embed_register_listeners_start");
       await registerListeners();
       markStartupPhase("unity_embed_register_listeners_done");
+      if (unityEmbedWorkspaceId.trim()) {
+        projectStore.activeUiUnityProjectId = unityEmbedWorkspaceId.trim();
+        await chatStore.refreshSessions();
+      }
     } catch (error) {
       const err = normalizeAppError(error);
       markStartupPhase("unity_embed_bootstrap_error", { code: err.code });
@@ -875,6 +969,13 @@ watch(() => projectStore.workingDir, () => {
             <svg class="ws-icon" viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
               <path d="M1 3.5A1.5 1.5 0 0 1 2.5 2h3.879a1.5 1.5 0 0 1 1.06.44l1.122 1.12A1.5 1.5 0 0 0 9.62 4H13.5A1.5 1.5 0 0 1 15 5.5v7a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 12.5v-9z"/>
             </svg>
+            <span
+              v-if="workspaceCurrentUnityProject"
+              class="workspace-runtime-dot"
+              :class="workspaceProjectStatusClass(workspaceCurrentUnityProject)"
+              :title="workspaceRuntimeStatusText"
+              aria-hidden="true"
+            ></span>
             <span class="ws-name">{{ workspaceButtonLabel }}</span>
             <span v-if="workspaceSwitchBusy" class="workspace-switch-spinner" aria-hidden="true"></span>
             <svg v-else class="ws-chevron" :class="{ open: showDirDropdown }" viewBox="0 0 16 16" fill="currentColor" width="10" height="10">
@@ -883,6 +984,42 @@ watch(() => projectStore.workingDir, () => {
           </button>
           <Transition name="dropdown">
             <div v-if="showDirDropdown" class="dir-dropdown">
+              <template v-if="workspaceUnityProjects.length > 0">
+                <div class="dropdown-label unity-project-label">Unity 项目</div>
+                <div
+                  v-for="project in workspaceUnityProjects"
+                  :key="project.workspaceId"
+                  class="unity-project-row"
+                  :class="{
+                    active: isWorkspaceProjectCurrent(project),
+                    [workspaceProjectStatusClass(project)]: true,
+                  }"
+                  :title="project.projectPath"
+                >
+                  <button
+                    class="unity-project-main"
+                    type="button"
+                    @click="selectWorkspaceProject(project)"
+                  >
+                    <span class="unity-project-state-dot" aria-hidden="true"></span>
+                    <span class="unity-project-text">
+                      <span class="unity-project-name">{{ project.name }}</span>
+                      <span class="unity-project-status">{{ workspaceProjectStatusText(project) }}</span>
+                    </span>
+                    <span v-if="isWorkspaceProjectCurrent(project)" class="dir-check">&#10003;</span>
+                  </button>
+                  <button
+                    class="unity-project-action"
+                    type="button"
+                    :disabled="workspaceProjectBusyId !== null"
+                    :aria-busy="workspaceProjectBusyId === project.workspaceId"
+                    @click.stop="project.activated ? deactivateWorkspaceProject(project) : activateWorkspaceProject(project)"
+                  >
+                    {{ workspaceProjectBusyId === project.workspaceId ? "处理中" : project.activated ? "停用" : "激活" }}
+                  </button>
+                </div>
+                <div class="dropdown-divider"></div>
+              </template>
               <div class="dropdown-label">{{ t("app.dir.recentDirs") }}</div>
               <div
                 v-for="dir in projectStore.recentDirs"
@@ -979,7 +1116,7 @@ watch(() => projectStore.workingDir, () => {
           :is="knowledgeViewComponent"
           v-if="uiStore.knowledgeMounted && knowledgeViewComponent"
           v-show="uiStore.activeTab === 'knowledge'"
-          :working-dir="projectStore.workingDir"
+          :working-dir="projectStore.selectedUnityProjectPath"
           :selected-model-id="modelStore.selectedModelId"
           :model-defaults="modelStore.modelDefaults"
         />
@@ -995,7 +1132,7 @@ watch(() => projectStore.workingDir, () => {
           :is="assetViewComponent"
           v-if="uiStore.assetMounted && assetViewComponent"
           v-show="uiStore.activeTab === 'asset'"
-          :working-dir="projectStore.workingDir"
+          :working-dir="projectStore.selectedUnityProjectPath"
         />
         <div
           v-else-if="uiStore.assetMounted && uiStore.activeTab === 'asset'"
@@ -1023,7 +1160,7 @@ watch(() => projectStore.workingDir, () => {
           :is="pluginViewComponent"
           v-if="showPluginEntry && uiStore.pluginsMounted && pluginViewComponent"
           v-show="uiStore.activeTab === 'plugins'"
-          :working-dir="projectStore.workingDir"
+          :working-dir="projectStore.selectedUnityProjectPath"
         />
         <div
           v-else-if="showPluginEntry && uiStore.pluginsMounted && uiStore.activeTab === 'plugins'"
@@ -1662,6 +1799,26 @@ body.is-dragging-select-lock * {
   opacity: 1;
 }
 
+.workspace-runtime-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--text-tertiary);
+}
+
+.workspace-runtime-dot.is-activated {
+  background: var(--status-good-fg);
+}
+
+.workspace-runtime-dot.is-connected {
+  background: var(--accent-color);
+}
+
+.workspace-runtime-dot.is-editor-open {
+  background: var(--status-warn-fg);
+}
+
 .ws-name {
   flex: 1;
   min-width: 0;
@@ -1719,6 +1876,120 @@ body.is-dragging-select-lock * {
   letter-spacing: 0.5px;
   color: var(--text-secondary);
   padding: 6px 8px 4px;
+}
+
+.unity-project-label {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.unity-project-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 6px;
+  padding: 3px 4px;
+  border-radius: 6px;
+  color: var(--text-color);
+}
+
+.unity-project-row:hover,
+.unity-project-row.active {
+  background: var(--hover-bg);
+}
+
+.unity-project-row.active {
+  background: var(--active-bg);
+}
+
+.unity-project-main,
+.unity-project-action {
+  border: 0;
+  border-radius: 5px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.unity-project-main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 4px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.unity-project-main:hover {
+  background: color-mix(in srgb, var(--hover-bg) 70%, transparent);
+}
+
+.unity-project-state-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--text-tertiary);
+}
+
+.unity-project-row.is-activated .unity-project-state-dot {
+  background: var(--status-good-fg);
+}
+
+.unity-project-row.is-connected .unity-project-state-dot {
+  background: var(--accent-color);
+}
+
+.unity-project-row.is-editor-open .unity-project-state-dot {
+  background: var(--status-warn-fg);
+}
+
+.unity-project-text {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.unity-project-name,
+.unity-project-status {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.unity-project-name {
+  font-weight: 500;
+}
+
+.unity-project-status {
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.unity-project-action {
+  align-self: center;
+  min-width: 42px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-elevated);
+  color: var(--text-color);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.unity-project-action:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--hover-bg);
+}
+
+.unity-project-action:disabled {
+  cursor: progress;
+  opacity: 0.68;
 }
 
 .dir-item {

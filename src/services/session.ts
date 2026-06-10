@@ -13,11 +13,14 @@ import type {
   PendingSessionInput,
 } from "../types";
 
+export type SessionListScope = "activeProject" | "allProjects";
+
 export interface ChatParams {
   sessionId?: string | null;
   text: string;
   sessionTitle?: string | null;
   agentId?: string | null;
+  workspaceId?: string | null;
   model?: string | null;
   effort?: string | null;
   images?: ImageAttachment[] | null;
@@ -34,6 +37,7 @@ export interface CreateSessionParams {
   parentSessionId?: string | null;
   sessionType?: string | null;
   agentId?: string | null;
+  workspaceId?: string | null;
 }
 
 export interface ChatLaunchResult {
@@ -129,20 +133,42 @@ export function forkSessionFromMessage(
   });
 }
 
-export function listSessions(): Promise<SessionSummary[]> {
-  return ipcInvoke<SessionSummary[]>("list_sessions");
+export function listSessions(
+  workspaceId?: string | null,
+  scope: SessionListScope = "activeProject",
+): Promise<SessionSummary[]> {
+  return ipcInvoke<SessionSummary[]>("list_sessions", {
+    workspaceId: workspaceId ?? null,
+    listScope: scope,
+  });
 }
 
-export function listArchivedSessions(): Promise<SessionSummary[]> {
-  return ipcInvoke<SessionSummary[]>("list_archived_sessions");
+export function listArchivedSessions(
+  workspaceId?: string | null,
+  scope: SessionListScope = "activeProject",
+): Promise<SessionSummary[]> {
+  return ipcInvoke<SessionSummary[]>("list_archived_sessions", {
+    workspaceId: workspaceId ?? null,
+    listScope: scope,
+  });
 }
 
-export function getActiveSessionSelection(): Promise<string | null> {
-  return ipcInvoke<string | null>("get_active_session_selection");
+export function getActiveSessionSelection(
+  scope: SessionListScope = "activeProject",
+): Promise<string | null> {
+  return ipcInvoke<string | null>("get_active_session_selection", {
+    selectionScope: scope,
+  });
 }
 
-export function saveActiveSessionSelection(sessionId: string | null): Promise<void> {
-  return ipcInvoke("save_active_session_selection", { sessionId });
+export function saveActiveSessionSelection(
+  sessionId: string | null,
+  scope: SessionListScope = "activeProject",
+): Promise<void> {
+  return ipcInvoke("save_active_session_selection", {
+    sessionId,
+    selectionScope: scope,
+  });
 }
 
 export function loadSession(sessionId: string): Promise<SessionDetail> {

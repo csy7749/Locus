@@ -211,6 +211,10 @@ const props = defineProps<{
   scanPhase?: AssetDbScanEvent | null;
   lastScanStats?: ScanStats | null;
   isUnityProject?: boolean;
+  projectRuntimeActive?: boolean;
+  newSessionRuntimeActive?: boolean;
+  currentProjectName?: string;
+  showProjectLabels?: boolean;
   skills?: SkillManifest[];
   streamingSessionIds?: Set<string>;
   undoableMessageIds?: Set<string>;
@@ -227,6 +231,19 @@ function hasRunningUnityRecompile(calls: ToolCallDisplay[] | undefined): boolean
 }
 
 const unityRecompileActive = computed(() => hasRunningUnityRecompile(props.activeToolCalls));
+const projectRuntimeActive = computed(() => props.projectRuntimeActive !== false);
+const newSessionRuntimeActive = computed(() => props.newSessionRuntimeActive ?? projectRuntimeActive.value);
+const sessionActionsDisabled = computed(() => !projectRuntimeActive.value);
+const newSessionDisabled = computed(() => !newSessionRuntimeActive.value);
+const inputCurrentProjectName = computed(() => props.currentProjectName?.trim() ?? "");
+const showInputCurrentProjectName = computed(() =>
+  displaySettings.sessionListScope === "allProjects" && inputCurrentProjectName.value.length > 0,
+);
+const sessionDisabledMessage = computed(() =>
+  sessionActionsDisabled.value && props.activeSessionId
+    ? t("chat.session.projectInactive")
+    : "",
+);
 
 const emit = defineEmits<{
   send: [text: string, images: ImageAttachment[], assetRefs: AssetRefAttachment[], overrides?: { displayText?: string; mode?: string; userIntent?: UserIntentMeta | null }];
@@ -902,6 +919,7 @@ const messageContextCanCopy = computed(() =>
 const messageContextCanAct = computed(() =>
   !!props.activeSessionId
   && !props.isStreaming
+  && projectRuntimeActive.value
   && !!messageContextMessage.value
   && messageContextMessage.value.role !== "tool",
 );
@@ -1011,7 +1029,7 @@ const currentUndoTarget = computed(() => {
 });
 
 const canUndoConversation = computed(() =>
-  !!props.activeSessionId && !!currentUndoTarget.value && !props.isStreaming,
+  !!props.activeSessionId && !!currentUndoTarget.value && !props.isStreaming && projectRuntimeActive.value,
 );
 const canUndoFilesAndConversation = computed(() =>
   canUndoConversation.value && !!currentUndoTarget.value?.fileUndoTarget,
@@ -1165,6 +1183,7 @@ async function undoFilesAndConversation() {
 }
 
 async function handleNewChatRequest() {
+  if (sessionActionsDisabled.value) return;
   if (props.activeSessionId === null) {
     composerPanelRef.value?.resetDraft();
     inputText.value = "";
@@ -2110,11 +2129,13 @@ const showSingleToolConfirmCard = computed(() =>
 );
 
 function handlePlanContinue() {
+  if (sessionActionsDisabled.value) return;
   chatStore.clearPendingPlan();
   emit("send", t("chat.plan.continueMessage"), [], []);
 }
 
 function handleComposerSend(payload: ChatComposerSendPayload) {
+  if (sessionActionsDisabled.value) return;
   if (chatStore.pendingPlanRun) {
     chatStore.clearPendingPlan();
   }
@@ -2377,6 +2398,8 @@ onUnmounted(() => {
       :session-panel-width="sessionPanelWidth"
       :working-dir="workingDir"
       :show-views="displaySettings.showViewsInSessionPanel"
+      :show-project-labels="displaySettings.sessionListScope === 'allProjects'"
+      :new-session-disabled="newSessionDisabled"
       @select-session="emit('selectSession', $event)"
       @new-chat="handleNewChatRequest"
       @rename-session="(id: string, title: string) => emit('renameSession', id, title)"
@@ -2401,6 +2424,8 @@ onUnmounted(() => {
         :show-expand-panel-button="sessionPanelCollapsed && !isVerticalLayout"
         :working-dir="workingDir"
         :show-views="displaySettings.showViewsInSessionPanel"
+        :show-project-labels="displaySettings.sessionListScope === 'allProjects'"
+        :new-session-disabled="newSessionDisabled"
         @select-session="emit('selectSession', $event)"
         @new-chat="handleNewChatRequest"
         @expand-panel="setSessionPanelCollapsed(false)"
@@ -2591,6 +2616,13 @@ onUnmounted(() => {
             @launch-unity-project="emit('launchUnityProject')"
             @update-knowledge-access-mode="setKnowledgeAccessMode"
           />
+          <span
+            v-if="showInputCurrentProjectName"
+            class="input-current-project"
+            :title="t('chat.input.sessionProjectTitle', inputCurrentProjectName)"
+          >
+            {{ inputCurrentProjectName }}
+          </span>
         </div>
         <div class="input-backdrop-action">
           <button
@@ -2606,6 +2638,9 @@ onUnmounted(() => {
           </button>
         </div>
       </div>
+      <div v-if="sessionDisabledMessage" class="chat-input-disabled-message">
+        {{ sessionDisabledMessage }}
+      </div>
       <RichChatInput
         ref="composerPanelRef"
         v-model="inputText"
@@ -2613,12 +2648,13 @@ onUnmounted(() => {
         :skills="skills"
         :placeholder="chatInputPlaceholder"
         :is-streaming="isStreaming"
+        :disabled="sessionActionsDisabled"
         :send-label="isStreaming ? runningSendLabel : t('common.send')"
         :cancel-label="t('common.cancel')"
         :compact="inputControlsCollapsed"
         :asset-ref-sync-key="composerAssetRefSyncKey"
         @send="handleComposerSend"
-        @compact="emit('compact')"
+        @compact="!sessionActionsDisabled && emit('compact')"
         @fork="emit('fork')"
         @undo="openUndoChooser"
         @clear="handleNewChatRequest"
@@ -3244,6 +3280,24 @@ onUnmounted(() => {
   justify-self: start;
   display: flex;
   align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.input-current-project {
+  max-width: min(220px, 28vw);
+  min-width: 0;
+  padding: 2px 7px;
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--panel-bg) 76%, var(--input-bg) 24%);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .input-backdrop-action {
@@ -3430,6 +3484,17 @@ onUnmounted(() => {
 .changes-toggle-btn:disabled {
   opacity: 0.48;
   cursor: not-allowed;
+}
+
+.chat-input-disabled-message {
+  margin: 0 14px 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--panel-bg) 76%, var(--input-bg) 24%);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 /* ── Ask User Card ── */

@@ -29,7 +29,7 @@ describe("chat status indicators", () => {
     expect(chatView).toContain(':unity-recompiling="unityRecompileActive"');
     expect(chatView).toContain("workingDir?: string;");
     expect(chatView).toContain(':working-dir="workingDir"');
-    expect(workspace).toContain(':unity-connection-status="projectStore.unityConnectionStatus"');
+    expect(workspace).toContain(':unity-connection-status="projectStore.selectedUnityConnectionStatus"');
     expect(workspace).toContain(':working-dir="projectStore.workingDir"');
     expect(workspace).toContain(':unity-plugin-status="projectStore.pluginToast"');
     expect(workspace).toContain(':unity-plugin-installing="projectStore.pluginInstalling"');
@@ -41,6 +41,31 @@ describe("chat status indicators", () => {
     expect(sessionPanel).not.toContain("sp-scan-status");
     expect(indicators).toContain('id: "assetDb"');
     expect(indicators).toContain('id: "unity"');
+  });
+
+  it("disables new session and execution actions for inactive selected projects", () => {
+    const workspace = read("src/components/ChatWorkspaceView.vue");
+    const chatView = read("src/components/ChatView.vue");
+    const sessionPanel = read("src/components/chat/SessionPanel.vue");
+    const compactPicker = read("src/components/chat/SessionCompactPicker.vue");
+    const projectStore = read("src/stores/project.ts");
+
+    expect(projectStore).toContain("const newSessionRuntimeActive = computed(() => !!newSessionWorkspaceId.value);");
+    expect(projectStore).toContain("const activeUiUnityProjectInactive = computed(() =>");
+    expect(workspace).toContain("const activeSessionProjectRuntimeActive = computed(() =>");
+    expect(workspace).toContain(':project-runtime-active="activeSessionProjectRuntimeActive"');
+    expect(workspace).toContain(':new-session-runtime-active="projectStore.newSessionRuntimeActive"');
+    expect(chatView).toContain("projectRuntimeActive?: boolean;");
+    expect(chatView).toContain("newSessionRuntimeActive?: boolean;");
+    expect(chatView).toContain("const sessionActionsDisabled = computed(() => !projectRuntimeActive.value);");
+    expect(chatView).toContain("const newSessionDisabled = computed(() => !newSessionRuntimeActive.value);");
+    expect(chatView).toContain(":disabled=\"sessionActionsDisabled\"");
+    expect(chatView).toContain(":new-session-disabled=\"newSessionDisabled\"");
+    expect(chatView).toContain("if (sessionActionsDisabled.value) return;");
+    expect(sessionPanel).toContain("newSessionDisabled?: boolean;");
+    expect(sessionPanel).toContain(":disabled=\"newSessionDisabled\"");
+    expect(compactPicker).toContain("newSessionDisabled?: boolean;");
+    expect(compactPicker).toContain(":disabled=\"newSessionDisabled\"");
   });
 
   it("shows Unity pipe and working directory in the Unity popover", () => {
@@ -167,8 +192,9 @@ describe("chat status indicators", () => {
     const watcher = read("src-tauri/src/asset_db/watcher.rs");
     const zh = read("src/language/zh.json");
     const en = read("src/language/en.json");
-    const scanEventBlock = types.match(/export type AssetDbScanEvent =[\s\S]*?\| \{ phase: "error"; error: AppErrorPayload \};/)?.[0] ?? "";
+    const scanEventBlock = types.match(/export type AssetDbScanEvent =[\s\S]*?\n\);/)?.[0] ?? "";
 
+    expect(scanEventBlock).toContain("ProjectScopedRuntimeEvent");
     expect(scanEventBlock).toContain('phase: "reconcile";');
     expect(scanEventBlock).toContain('stage?: "scanning" | "discovering" | "processing" | string | null;');
     expect(scanEventBlock).toContain("queued?: number | null;");

@@ -10,6 +10,7 @@ export type SessionRuntimeStatus =
 export interface SessionSummary {
   id: string;
   title: string;
+  workspaceId?: string | null;
   agentId?: string | null;
   sessionType: string;
   parentSessionId?: string | null;
@@ -106,6 +107,8 @@ export interface UnityBackgroundHookStatus {
 }
 
 export interface UnityConnectionStatus {
+  workspaceId?: string | null;
+  projectPath: string;
   connected: boolean;
   editorStatus: string;
   scenePath?: string | null;
@@ -121,6 +124,19 @@ export interface UnityConnectionStatus {
   lastError?: string | null;
   backgroundHook: UnityBackgroundHookStatus;
   checkedAtMs: number;
+}
+
+export interface UnityProjectStatus {
+  workspaceId: string;
+  projectPath: string;
+  name: string;
+  activated: boolean;
+  editorOpen: boolean;
+  bridgeConnected: boolean;
+  editorStatus: string;
+  editorProcessState: UnityEditorProcessState;
+  lastSeenAtMs: number;
+  connectionStatus: UnityConnectionStatus;
 }
 
 export interface SkillIntentItem {
@@ -282,7 +298,7 @@ export interface ActiveSessionSelectionChanged {
   sessionId: string | null;
 }
 
-export interface SessionContentChangedEvent {
+export interface SessionContentChangedEvent extends ProjectScopedRuntimeEvent {
   workingDir: string;
   sessionId: string;
   source:
@@ -614,7 +630,12 @@ export interface ScanStats {
   duplicateGuids: DuplicateGuidOverview;
 }
 
-export type AssetDbScanEvent =
+interface ProjectScopedRuntimeEvent {
+  workspaceId?: string | null;
+  projectPath?: string | null;
+}
+
+export type AssetDbScanEvent = ProjectScopedRuntimeEvent & (
   | { phase: "dirScan" }
   | { phase: "metaParse"; total: number; completed: number }
   | { phase: "yamlParse"; total: number; completed: number }
@@ -630,9 +651,10 @@ export type AssetDbScanEvent =
     }
   | { phase: "reconcileDone" }
   | { phase: "done"; stats: ScanStats }
-  | { phase: "error"; error: AppErrorPayload };
+  | { phase: "error"; error: AppErrorPayload }
+);
 
-export interface KnowledgeChangedEvent {
+export interface KnowledgeChangedEvent extends ProjectScopedRuntimeEvent {
   workingDir: string;
   source: string;
   changedAt: number;
@@ -793,10 +815,11 @@ export interface AskOption {
   description: string;
 }
 
-export type PluginStatus =
+export type PluginStatus = ProjectScopedRuntimeEvent & (
   | { status: "missing" }
   | { status: "outdated" }
-  | { status: "upToDate" };
+  | { status: "upToDate" }
+);
 
 export interface PendingQuestion {
   questionId: string;

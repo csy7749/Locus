@@ -15,6 +15,7 @@ import {
 import { getLocusRuntime, type RuntimeUnsubscribe } from "../services/locusRuntime";
 import { markStartupPhase, measureStartupAsync } from "../services/startupPerf";
 import { setScope, setWarmup, clearWarmup } from "./warmupCache";
+import { useDisplaySettings } from "./useDisplaySettings";
 import {
   getProviders,
   codexStatus as fetchCodexStatus,
@@ -94,6 +95,7 @@ export function useAppBootstrap() {
   const projectStore = useProjectStore();
   const chatStore = useChatStore();
   const { skillItems, loadSkills } = useSkills();
+  const { state: displaySettings } = useDisplaySettings();
 
   const notificationStore = useNotificationStore();
 
@@ -131,16 +133,22 @@ export function useAppBootstrap() {
     return (path ?? "").trim().replace(/\\/g, "/").replace(/\/+$/g, "").toLowerCase();
   }
 
-  function knowledgeChangeBelongsToCurrentWorkspace(change: KnowledgeChangedEvent): boolean {
-    const eventWorkspace = normalizeWorkspacePath(change.workingDir);
+  function eventBelongsToCurrentWorkspace(event: { workspaceId?: string | null; workingDir: string }): boolean {
+    const workspaceId = event.workspaceId?.trim();
+    if (workspaceId) {
+      return workspaceId === projectStore.activeUiUnityProjectId;
+    }
+    const eventWorkspace = normalizeWorkspacePath(event.workingDir);
     const currentWorkspace = normalizeWorkspacePath(projectStore.workingDir);
     return !!eventWorkspace && eventWorkspace === currentWorkspace;
   }
 
+  function knowledgeChangeBelongsToCurrentWorkspace(change: KnowledgeChangedEvent): boolean {
+    return eventBelongsToCurrentWorkspace(change);
+  }
+
   function sessionContentChangeBelongsToCurrentWorkspace(change: SessionContentChangedEvent): boolean {
-    const eventWorkspace = normalizeWorkspacePath(change.workingDir);
-    const currentWorkspace = normalizeWorkspacePath(projectStore.workingDir);
-    return !!eventWorkspace && eventWorkspace === currentWorkspace;
+    return eventBelongsToCurrentWorkspace(change);
   }
 
   function knowledgeChangeMayAffectSkills(change: KnowledgeChangedEvent): boolean {
@@ -236,9 +244,12 @@ export function useAppBootstrap() {
 
     await measureStartupAsync("bootstrap_shell_data", async () => {
       await Promise.all([
+        projectStore.loadWorkingDir(),
+        projectStore.loadUnityProjectStatuses(),
+      ]);
+      await Promise.all([
         chatStore.refreshSessions(),
         agentStore.loadAgents(),
-        projectStore.loadWorkingDir(),
         loadSkills(),
       ]);
     });
@@ -514,6 +525,7 @@ export function useAppBootstrap() {
     await measureStartupAsync("register_listeners_initial_state", async () => {
       await Promise.all([
         projectStore.checkUnityConnection(),
+        projectStore.loadUnityProjectStatuses(),
         projectStore.checkUnityPlugin(),
         projectStore.loadAssetDbStatus(),
       ]);
@@ -556,7 +568,9 @@ export function useAppBootstrap() {
         () => projectStore.setWorkingDir(path),
         { target: path },
       );
-      chatStore.newChat({ persistSelection: false });
+      if (displaySettings.sessionListScope !== "allProjects") {
+        chatStore.newChat({ persistSelection: false });
+      }
       console.info(`[workspace-switch] phase=new_chat_done target=${path}`);
       await Promise.all([
         measureWorkspaceSwitchAsync("refresh_sessions", () => chatStore.refreshSessions(), {
@@ -611,9 +625,12 @@ export function useAppBootstrap() {
     await modelStore.loadCodexAvailableModels();
     modelStore.resolveSelectedModel(true);
     await Promise.all([
+      projectStore.loadWorkingDir(),
+      projectStore.loadUnityProjectStatuses(),
+    ]);
+    await Promise.all([
       chatStore.refreshSessions(),
       agentStore.loadAgents(),
-      projectStore.loadWorkingDir(),
       projectStore.loadRecentDirs(),
       projectStore.checkUnityConnection(),
       projectStore.checkUnityPlugin(),

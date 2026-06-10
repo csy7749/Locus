@@ -15,6 +15,7 @@ import {
   type ViewPackageSummary,
 } from "../../services/view";
 import { useNotificationStore } from "../../stores/notification";
+import { useProjectStore } from "../../stores/project";
 import LucideIcon from "../icons/LucideIcon.vue";
 import { resolveLocusViewIcon } from "../icons/locusViewIcons";
 
@@ -30,6 +31,8 @@ const props = defineProps<{
   showExpandPanelButton?: boolean;
   workingDir?: string;
   showViews?: boolean;
+  showProjectLabels?: boolean;
+  newSessionDisabled?: boolean;
 }>();
 
 interface ViewTreeNode {
@@ -59,6 +62,7 @@ const open = ref(false);
 const pickerRef = ref<HTMLElement | null>(null);
 const { state: shortcutState } = useKeyboardShortcuts();
 const notificationStore = useNotificationStore();
+const projectStore = useProjectStore();
 const viewSummaries = ref<ViewPackageSummary[]>([]);
 const viewFolders = ref<ViewFolderSummary[]>([]);
 const viewTreeOrder = ref<string[]>([]);
@@ -86,6 +90,7 @@ const activeSession = computed(() =>
 const currentTitle = computed(() =>
   activeSession.value?.title || t("chat.session.newSession"),
 );
+const newSessionDisabled = computed(() => props.newSessionDisabled === true);
 const showNewButton = computed(() => props.activeSessionId !== null);
 const newChatShortcutLabel = computed(() => formatShortcut(shortcutState.newChat));
 const viewTreeNodes = computed(() =>
@@ -130,6 +135,20 @@ function formatSessionTime(ts: number): string {
   }
 
   return t("common.timeJustNow");
+}
+
+function projectNameFromPath(projectPath: string): string {
+  const normalized = projectPath.replace(/\\/g, "/").replace(/\/+$/g, "");
+  return normalized.split("/").filter(Boolean).pop() ?? projectPath;
+}
+
+function sessionProjectLabel(session: SessionSummary): string {
+  if (!props.showProjectLabels) return "";
+  const workspaceId = session.workspaceId?.trim();
+  if (!workspaceId) return t("chat.session.unscopedProject");
+  const project = projectStore.unityProjects.get(workspaceId);
+  return project?.name?.trim()
+    || (project?.projectPath ? projectNameFromPath(project.projectPath) : "");
 }
 
 function loadViewExpandedState(): Record<string, boolean> {
@@ -364,6 +383,7 @@ function selectSession(id: string) {
 }
 
 function newChat() {
+  if (newSessionDisabled.value) return;
   emit("newChat");
   open.value = false;
 }
@@ -437,7 +457,9 @@ onUnmounted(() => {
       v-if="showNewButton"
       type="button"
       class="session-compact-new"
+      :class="{ disabled: newSessionDisabled }"
       :title="t('chat.session.new')"
+      :disabled="newSessionDisabled"
       @click="newChat"
     >
       +
@@ -449,7 +471,8 @@ onUnmounted(() => {
           <button
             type="button"
             class="session-compact-option"
-            :class="{ active: activeSessionId === null }"
+            :class="{ active: activeSessionId === null, disabled: newSessionDisabled }"
+            :disabled="newSessionDisabled"
             @click="newChat"
           >
             <span class="session-compact-option-plus" aria-hidden="true">+</span>
@@ -474,6 +497,12 @@ onUnmounted(() => {
             >
               <span class="session-compact-option-dot"></span>
               <span class="session-compact-option-title">{{ session.title || t("chat.session.newSession") }}</span>
+              <span
+                v-if="sessionProjectLabel(session)"
+                class="session-compact-option-project"
+              >
+                {{ sessionProjectLabel(session) }}
+              </span>
               <span class="session-compact-option-time">{{ formatSessionTime(session.updatedAt) }}</span>
             </button>
           </template>
@@ -752,6 +781,16 @@ onUnmounted(() => {
   font-size: 11px;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
+}
+
+.session-compact-option-project {
+  max-width: 92px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1;
+  font-size: 11px;
+  color: var(--text-secondary);
 }
 
 .session-compact-option-shortcut {

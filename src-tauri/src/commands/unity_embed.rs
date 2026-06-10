@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, WebviewUrl};
 
 use crate::error::AppError;
+use crate::unity_project_runtime::UnityProjectRegistry;
 use crate::workspace::Workspace;
 
 const WINDOW_LABEL: &str = "unity-embed";
@@ -37,6 +38,8 @@ struct UnityEmbedControlMessage {
     kind: String,
     #[serde(default)]
     window_id: String,
+    #[serde(default)]
+    workspace_id: Option<String>,
     #[serde(default)]
     target_kind: String,
     #[serde(default)]
@@ -75,6 +78,8 @@ struct UnityEmbedControlMessage {
 #[serde(rename_all = "camelCase")]
 pub struct UnityEmbedOpenFrontendWindowRequest {
     #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
     pub window_id: Option<String>,
     pub target_kind: String,
     #[serde(default)]
@@ -86,6 +91,8 @@ pub struct UnityEmbedOpenFrontendWindowRequest {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnityEmbedOpenFrontendWindowResult {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
     pub window_id: String,
     pub window_label: String,
     pub target_kind: String,
@@ -117,12 +124,16 @@ struct UnityEmbedAssetDropPayload {
 #[serde(rename_all = "camelCase")]
 pub struct UnityEmbedStartAssetDragRequest {
     refs: Vec<UnityEmbedAssetRef>,
+    #[serde(default)]
+    workspace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnityEmbedNativeAssetFileDragRequest {
     refs: Vec<UnityEmbedAssetRef>,
+    #[serde(default)]
+    workspace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -342,6 +353,13 @@ fn default_window_id_for_target(target_kind: &str, target_id: &str) -> String {
     }
 }
 
+fn scoped_window_id(workspace_id: Option<&str>, window_id: String) -> String {
+    let Some(workspace_id) = workspace_id.map(str::trim).filter(|value| !value.is_empty()) else {
+        return window_id;
+    };
+    sanitize_unity_embed_id(&format!("ws-{workspace_id}-{window_id}"))
+}
+
 fn query_escape(value: &str) -> String {
     url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
@@ -359,7 +377,12 @@ fn unity_embed_window_label_for_optional_id(window_id: Option<&str>) -> String {
     unity_embed_window_label_for_id(window_id.unwrap_or(DEFAULT_WINDOW_ID))
 }
 
-pub(crate) fn unity_embed_host_url(window_id: &str, target_kind: &str, target_id: &str) -> String {
+pub(crate) fn unity_embed_host_url(
+    window_id: &str,
+    target_kind: &str,
+    target_id: &str,
+    workspace_id: Option<&str>,
+) -> String {
     let window_id = sanitize_unity_embed_id(window_id);
     let target_kind = normalize_target_kind(target_kind);
     let mut url = format!(
@@ -367,6 +390,10 @@ pub(crate) fn unity_embed_host_url(window_id: &str, target_kind: &str, target_id
         query_escape(&window_id),
         query_escape(&target_kind)
     );
+    if let Some(workspace_id) = workspace_id.map(str::trim).filter(|value| !value.is_empty()) {
+        url.push_str("&workspaceId=");
+        url.push_str(&query_escape(workspace_id));
+    }
     let target_id = target_id.trim();
     if !target_id.is_empty() {
         url.push_str("&id=");
@@ -399,7 +426,12 @@ fn unity_embed_host_url_for_msg(msg: &UnityEmbedControlMessage) -> String {
     } else {
         msg.target_kind.as_str()
     };
-    unity_embed_host_url(&window_id, target_kind, &msg.target_id)
+    unity_embed_host_url(
+        &window_id,
+        target_kind,
+        &msg.target_id,
+        msg.workspace_id.as_deref(),
+    )
 }
 
 fn is_unity_embed_window_label(label: &str) -> bool {
@@ -479,6 +511,13 @@ fn normalize_open_frontend_window_request(
         .filter(|value| !value.is_empty())
         .map(sanitize_unity_embed_id)
         .unwrap_or_else(|| default_window_id_for_target(&target_kind, &target_id));
+    let workspace_id = request
+        .workspace_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let window_id = scoped_window_id(workspace_id.as_deref(), window_id);
     let title = request
         .title
         .as_deref()
@@ -493,8 +532,9 @@ fn normalize_open_frontend_window_request(
         })
         .to_string();
     let window_label = unity_embed_window_label_for_id(&window_id);
-    let host_url = unity_embed_host_url(&window_id, &target_kind, &target_id);
+    let host_url = unity_embed_host_url(&window_id, &target_kind, &target_id, workspace_id.as_deref());
     UnityEmbedOpenFrontendWindowResult {
+        workspace_id,
         window_id,
         window_label,
         target_kind,
@@ -781,6 +821,17 @@ async fn current_workspace_path(app_handle: &AppHandle) -> String {
     match app_handle.try_state::<Arc<Workspace>>() {
         Some(workspace) => workspace.path.read().await.clone(),
         None => String::new(),
+    }
+}
+
+async fn unity_embed_project_path(
+    app_handle: &AppHandle,
+    unity_projects: &UnityProjectRegistry,
+    workspace_id: Option<&str>,
+) -> Result<String, AppError> {
+    match workspace_id.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(id) => Ok(unity_projects.activated_runtime(id)?.project_path.clone()),
+        None => Ok(current_workspace_path(app_handle).await),
     }
 }
 
@@ -1140,7 +1191,10 @@ fn clear_unity_embed_asset_drag_after_release(app_handle: &AppHandle) {
 }
 
 #[tauri::command]
-pub async fn unity_embed_commit_asset_drop(app_handle: AppHandle) -> Result<(), AppError> {
+pub async fn unity_embed_commit_asset_drop(
+    app_handle: AppHandle,
+    _workspace_id: Option<String>,
+) -> Result<(), AppError> {
     let refs = current_unity_embed_asset_drag_refs();
     if refs.is_empty() {
         return Ok(());
@@ -1157,13 +1211,19 @@ pub async fn unity_embed_commit_asset_drop(app_handle: AppHandle) -> Result<(), 
 pub async fn unity_embed_start_asset_drag(
     app_handle: AppHandle,
     request: UnityEmbedStartAssetDragRequest,
+    unity_projects: State<'_, Arc<UnityProjectRegistry>>,
 ) -> Result<String, AppError> {
     let refs = sanitize_locus_outbound_drag_refs(request.refs);
     if refs.is_empty() {
         return Ok("no_refs".to_string());
     }
 
-    let cwd = current_workspace_path(&app_handle).await;
+    let cwd = unity_embed_project_path(
+        &app_handle,
+        unity_projects.inner().as_ref(),
+        request.workspace_id.as_deref(),
+    )
+    .await?;
     if cwd.trim().is_empty() {
         return Err(AppError::new(
             "unity.drag.workspace_missing",
@@ -1180,7 +1240,11 @@ pub async fn unity_embed_start_asset_drag(
 }
 
 #[tauri::command]
-pub async fn unity_embed_cancel_asset_drag(app_handle: AppHandle) -> Result<(), AppError> {
+pub async fn unity_embed_cancel_asset_drag(
+    app_handle: AppHandle,
+    workspace_id: Option<String>,
+    unity_projects: State<'_, Arc<UnityProjectRegistry>>,
+) -> Result<(), AppError> {
     cache_unity_embed_asset_drag_refs(Vec::new());
     #[cfg(target_os = "windows")]
     windows_impl::stop_reference_drag_preview();
@@ -1188,7 +1252,12 @@ pub async fn unity_embed_cancel_asset_drag(app_handle: AppHandle) -> Result<(), 
         eprintln!("[Locus] failed to clear Unity asset drag state: {error}");
     }
 
-    let cwd = current_workspace_path(&app_handle).await;
+    let cwd = unity_embed_project_path(
+        &app_handle,
+        unity_projects.inner().as_ref(),
+        workspace_id.as_deref(),
+    )
+    .await?;
     if cwd.trim().is_empty() {
         return Ok(());
     }
@@ -1203,13 +1272,19 @@ pub async fn unity_embed_cancel_asset_drag(app_handle: AppHandle) -> Result<(), 
 pub async fn unity_embed_start_native_asset_file_drag(
     app_handle: AppHandle,
     request: UnityEmbedNativeAssetFileDragRequest,
+    unity_projects: State<'_, Arc<UnityProjectRegistry>>,
 ) -> Result<String, AppError> {
     let refs = sanitize_locus_outbound_drag_refs(request.refs);
     if refs.is_empty() {
         return Ok("no_refs".to_string());
     }
 
-    let cwd = current_workspace_path(&app_handle).await;
+    let cwd = unity_embed_project_path(
+        &app_handle,
+        unity_projects.inner().as_ref(),
+        request.workspace_id.as_deref(),
+    )
+    .await?;
     if cwd.trim().is_empty() {
         return Err(AppError::new(
             "unity.drag.workspace_missing",
@@ -1832,8 +1907,20 @@ pub(crate) async fn open_unity_embed_frontend_window_for_request(
 pub async fn unity_embed_open_frontend_window(
     request: UnityEmbedOpenFrontendWindowRequest,
     workspace: State<'_, Arc<Workspace>>,
+    unity_projects: State<'_, Arc<UnityProjectRegistry>>,
 ) -> Result<UnityEmbedOpenFrontendWindowResult, AppError> {
-    let working_dir = workspace.path.read().await.clone();
+    let working_dir = match request
+        .workspace_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(workspace_id) => unity_projects
+            .activated_runtime(workspace_id)?
+            .project_path
+            .clone(),
+        None => workspace.path.read().await.clone(),
+    };
     open_unity_embed_frontend_window_for_request(&working_dir, request)
         .await
         .map_err(Into::into)

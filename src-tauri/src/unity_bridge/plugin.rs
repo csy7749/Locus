@@ -15,6 +15,16 @@ pub enum PluginStatus {
     UpToDate,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectPluginStatus<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workspace_id: Option<&'a str>,
+    project_path: &'a str,
+    #[serde(flatten)]
+    status: &'a PluginStatus,
+}
+
 const PLUGIN_DEFAULT_INSTALL_DIR: &str = "Packages/com.farlocus.locus";
 const PLUGIN_SKILLS_DIR: &str = "Editor/Skills";
 const PLUGIN_ASMDEF_NAME: &str = "Locus.Editor.asmdef";
@@ -543,19 +553,47 @@ pub fn install_or_update_plugin(project_path: &str) -> Result<String, String> {
 
 pub fn emit_plugin_status(app_handle: &AppHandle, project_path: &str) {
     let status = check_plugin_status(project_path);
+    let workspace_id = plugin_status_workspace_id(project_path);
     eprintln!(
         "[Locus] plugin check result for '{}': {:?}",
         project_path, status
     );
     match status {
         Ok(status) => {
-            let _ = app_handle.emit("unity-plugin-status", status);
+            emit_project_plugin_status(app_handle, workspace_id.as_deref(), project_path, &status);
         }
         Err(e) => {
             eprintln!("[Locus] plugin check error: {}", e);
-            let _ = app_handle.emit("unity-plugin-status", PluginStatus::Missing);
+            emit_project_plugin_status(
+                app_handle,
+                workspace_id.as_deref(),
+                project_path,
+                &PluginStatus::Missing,
+            );
         }
     }
+}
+
+fn emit_project_plugin_status(
+    app_handle: &AppHandle,
+    workspace_id: Option<&str>,
+    project_path: &str,
+    status: &PluginStatus,
+) {
+    let payload = ProjectPluginStatus {
+        workspace_id,
+        project_path,
+        status,
+    };
+    let _ = app_handle.emit("unity-plugin-status", payload);
+}
+
+fn plugin_status_workspace_id(project_path: &str) -> Option<String> {
+    let normalized = strip_extended_path_prefix(project_path).trim();
+    if normalized.is_empty() || !crate::unity_bridge::is_unity_project(normalized) {
+        return None;
+    }
+    crate::workspace::load_or_create_workspace(normalized).ok()
 }
 
 #[cfg(test)]

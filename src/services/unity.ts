@@ -1,6 +1,11 @@
 import { ipcInvoke } from "./ipc";
 import { getLocusRuntime } from "./locusRuntime";
-import type { AssetRefAttachment, PluginStatus, UnityConnectionStatus } from "../types";
+import type {
+  AssetRefAttachment,
+  PluginStatus,
+  UnityConnectionStatus,
+  UnityProjectStatus,
+} from "../types";
 
 export interface AssetSearchResult {
   name: string;
@@ -16,6 +21,44 @@ export function checkUnityConnection(): Promise<boolean> {
 
 export function checkUnityConnectionStatus(): Promise<UnityConnectionStatus> {
   return ipcInvoke<UnityConnectionStatus>("check_unity_connection_status");
+}
+
+export function listUnityProjectStatuses(): Promise<UnityProjectStatus[]> {
+  return ipcInvoke<UnityProjectStatus[]>("list_unity_project_statuses");
+}
+
+export function registerUnityProject(projectPath: string): Promise<UnityProjectStatus> {
+  return ipcInvoke<UnityProjectStatus>("register_unity_project", {
+    request: { projectPath },
+  });
+}
+
+export function openUnityProjectRuntime(projectPath: string): Promise<UnityProjectStatus> {
+  return ipcInvoke<UnityProjectStatus>("open_unity_project_runtime", {
+    request: { projectPath },
+  });
+}
+
+export function activateUnityProject(workspaceId: string): Promise<UnityProjectStatus> {
+  return ipcInvoke<UnityProjectStatus>("activate_unity_project", {
+    request: { workspaceId },
+  });
+}
+
+export function deactivateUnityProject(workspaceId: string): Promise<UnityProjectStatus> {
+  return ipcInvoke<UnityProjectStatus>("deactivate_unity_project", {
+    request: { workspaceId },
+  });
+}
+
+export function selectActiveUiUnityProject(workspaceId: string | null): Promise<{ workspaceId?: string | null }> {
+  return ipcInvoke("select_active_ui_unity_project", {
+    request: { workspaceId },
+  });
+}
+
+export function getActiveUiUnityProject(): Promise<{ workspaceId?: string | null }> {
+  return ipcInvoke("get_active_ui_unity_project");
 }
 
 export function checkUnityPlugin(): Promise<PluginStatus> {
@@ -38,6 +81,7 @@ export function launchUnityProject(): Promise<UnityLaunchResult> {
 
 export interface SelectUnityAssetOptions {
   focusProjectWindow?: boolean;
+  workspaceId?: string | null;
 }
 
 export function selectUnityAsset(
@@ -45,30 +89,51 @@ export function selectUnityAsset(
   options: SelectUnityAssetOptions = {},
 ): Promise<void> {
   const focusProjectWindow = options.focusProjectWindow ?? true;
-  return ipcInvoke("select_unity_asset", { assetPath, focusProjectWindow });
+  return ipcInvoke("select_unity_asset", {
+    assetPath,
+    focusProjectWindow,
+    workspaceId: resolveUnityCommandWorkspaceId(options.workspaceId),
+  });
 }
 
-export function openUnityAssetInspector(assetPath: string): Promise<void> {
-  return ipcInvoke("open_unity_asset_inspector", { assetPath });
+export function openUnityAssetInspector(
+  assetPath: string,
+  workspaceId?: string | null,
+): Promise<void> {
+  return ipcInvoke("open_unity_asset_inspector", {
+    assetPath,
+    workspaceId: resolveUnityCommandWorkspaceId(workspaceId),
+  });
 }
 
 export function selectUnitySceneObject(
   scenePath: string,
   objectPath: string,
+  workspaceId?: string | null,
 ): Promise<void> {
-  return ipcInvoke("select_unity_scene_object", { scenePath, objectPath });
+  return ipcInvoke("select_unity_scene_object", {
+    scenePath,
+    objectPath,
+    workspaceId: resolveUnityCommandWorkspaceId(workspaceId),
+  });
 }
 
 export function openUnitySceneObjectInspector(
   scenePath: string,
   objectPath: string,
+  workspaceId?: string | null,
 ): Promise<void> {
-  return ipcInvoke("open_unity_scene_object_inspector", { scenePath, objectPath });
+  return ipcInvoke("open_unity_scene_object_inspector", {
+    scenePath,
+    objectPath,
+    workspaceId: resolveUnityCommandWorkspaceId(workspaceId),
+  });
 }
 
 export type UnityEmbeddedFrontendTarget = "session" | "view";
 
 export interface UnityEmbeddedFrontendWindowRequest {
+  workspaceId?: string | null;
   windowId?: string | null;
   targetKind: UnityEmbeddedFrontendTarget;
   targetId?: string | null;
@@ -76,6 +141,7 @@ export interface UnityEmbeddedFrontendWindowRequest {
 }
 
 export interface UnityEmbeddedFrontendWindowResult {
+  workspaceId?: string | null;
   windowId: string;
   windowLabel: string;
   targetKind: UnityEmbeddedFrontendTarget;
@@ -92,6 +158,18 @@ export function currentUnityEmbedWindowId(): string | null {
   }
 }
 
+export function currentUnityEmbedWorkspaceId(): string | null {
+  try {
+    return new URLSearchParams(window.location.search).get("workspaceId");
+  } catch {
+    return null;
+  }
+}
+
+function resolveUnityCommandWorkspaceId(workspaceId?: string | null): string | null {
+  return workspaceId?.trim() || currentUnityEmbedWorkspaceId()?.trim() || null;
+}
+
 export function openUnityEmbeddedFrontendWindow(
   request: UnityEmbeddedFrontendWindowRequest,
 ): Promise<UnityEmbeddedFrontendWindowResult> {
@@ -99,11 +177,13 @@ export function openUnityEmbeddedFrontendWindow(
 }
 
 export function openUnityEmbeddedSessionWindow(request: {
+  workspaceId?: string | null;
   sessionId?: string | null;
   title?: string | null;
 } = {}): Promise<UnityEmbeddedFrontendWindowResult> {
   const sessionId = request.sessionId?.trim() || null;
   return openUnityEmbeddedFrontendWindow({
+    workspaceId: request.workspaceId?.trim() || null,
     targetKind: "session",
     targetId: sessionId,
     title: request.title?.trim()
@@ -143,7 +223,9 @@ export function setUnityEmbedDragPassthrough(active: boolean): Promise<void> {
 export function commitUnityEmbedAssetDrop(): Promise<void> {
   const runtime = getLocusRuntime();
   if (runtime.kind !== "tauri") return Promise.resolve();
-  return runtime.invoke("unity_embed_commit_asset_drop");
+  return runtime.invoke("unity_embed_commit_asset_drop", {
+    workspaceId: currentUnityEmbedWorkspaceId(),
+  });
 }
 
 export function startUnityEmbedAssetDrag(refs: AssetRefAttachment[]): Promise<void> {
@@ -152,6 +234,7 @@ export function startUnityEmbedAssetDrag(refs: AssetRefAttachment[]): Promise<vo
   return runtime.invoke("unity_embed_start_asset_drag", {
     request: {
       refs,
+      workspaceId: currentUnityEmbedWorkspaceId(),
     },
   });
 }
@@ -159,7 +242,9 @@ export function startUnityEmbedAssetDrag(refs: AssetRefAttachment[]): Promise<vo
 export function cancelUnityEmbedAssetDrag(): Promise<void> {
   const runtime = getLocusRuntime();
   if (runtime.kind !== "tauri") return Promise.resolve();
-  return runtime.invoke("unity_embed_cancel_asset_drag");
+  return runtime.invoke("unity_embed_cancel_asset_drag", {
+    workspaceId: currentUnityEmbedWorkspaceId(),
+  });
 }
 
 export function startUnityNativeAssetFileDrag(refs: AssetRefAttachment[]): Promise<void> {
@@ -168,6 +253,7 @@ export function startUnityNativeAssetFileDrag(refs: AssetRefAttachment[]): Promi
   return runtime.invoke("unity_embed_start_native_asset_file_drag", {
     request: {
       refs,
+      workspaceId: currentUnityEmbedWorkspaceId(),
     },
   });
 }

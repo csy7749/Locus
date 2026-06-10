@@ -1,4 +1,4 @@
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import { defineStore } from "pinia";
 import { useModelStore } from "./model";
 import { useAgentStore } from "./agent";
@@ -13,10 +13,11 @@ import { hydrateChatMessagesIntent, withClientMessageId } from "../composables/c
 import type { SessionScrollState } from "../composables/chatScrollState";
 import { t } from "../i18n";
 import { useChatChangesStore } from "./chatChanges";
-import { useDisplaySettings } from "../composables/useDisplaySettings";
+import { useDisplaySettings, type SessionListScope } from "../composables/useDisplaySettings";
 import { useKnowledgeAccessMode } from "../composables/useKnowledgeAccessMode";
 import { useChatInputSettings } from "../composables/useChatInputSettings";
 import { isToolCollapseTraceEnabled, logToolCollapseTrace, previewTraceText } from "../services/toolCollapseTrace";
+import { useProjectStore } from "./project";
 import type {
   SessionSummary, SessionDetail, ChatMessage, TokenUsage,
   TodoItem, StreamEvent, ImageAttachment, AssetRefAttachment, ToolCallDisplay,
@@ -436,9 +437,17 @@ export const useChatStore = defineStore("chat", () => {
     return sessions.value.find((session) => session.id === sessionId)?.sessionType ?? null;
   }
 
+  function currentSessionListScope(): SessionListScope {
+    return useDisplaySettings().state.sessionListScope;
+  }
+
+  function sessionListWorkspaceId(): string | null {
+    return currentSessionListScope() === "allProjects" ? null : newSessionWorkspaceId();
+  }
+
   function persistActiveSessionSelection(sessionId: string | null) {
     const seq = ++activeSessionSelectionPersistSeq;
-    sessionService.saveActiveSessionSelection(sessionId).catch((e) => {
+    sessionService.saveActiveSessionSelection(sessionId, currentSessionListScope()).catch((e) => {
       if (seq !== activeSessionSelectionPersistSeq) return;
       console.warn("save_active_session_selection failed:", e);
     });
@@ -460,7 +469,8 @@ export const useChatStore = defineStore("chat", () => {
 
     let savedSessionId: string | null = null;
     try {
-      savedSessionId = await sessionService.getActiveSessionSelection();
+      const scope = currentSessionListScope();
+      savedSessionId = await sessionService.getActiveSessionSelection(scope);
     } catch (e) {
       console.warn("get_active_session_selection failed:", e);
       return;
@@ -1705,9 +1715,14 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   // -- Actions --
+  function newSessionWorkspaceId(): string | null {
+    return useProjectStore().newSessionWorkspaceId || null;
+  }
+
   async function refreshSessions() {
     try {
-      const rawSessions = await sessionService.listSessions();
+      const scope = currentSessionListScope();
+      const rawSessions = await sessionService.listSessions(sessionListWorkspaceId(), scope);
       const nextSessions = normalizeSessionRuntimeStatuses(rawSessions);
       sessions.value = nextSessions;
       await restoreActiveSessionSelection(nextSessions);
@@ -1834,6 +1849,37 @@ export const useChatStore = defineStore("chat", () => {
     chatChangesStore.clear(oldSessionId);
     chatChangesStore.closeInlineDiff();
   }
+
+  function resetSessionListScope() {
+    const oldSessionId = activeSessionId.value;
+    persistTodoPanelState(oldSessionId);
+    setActiveSessionSelection(null, { persist: false });
+    activeSessionSelectionRestoreAttempted = false;
+    activeSessionType.value = null;
+    currentRunId.value = null;
+    pendingSessionId = null;
+    pendingManagedSessionId = null;
+    pendingManagedUnboundSession = false;
+    messages.value = [];
+    resetStreamRuntimeState();
+    tokenUsage.value = emptyTokenUsage();
+    todos.value = [];
+    todoWriteVersion.value = 0;
+    showTodoPanel.value = false;
+    todoMode.value = "current";
+    undoableMessageIds.value = new Set();
+    sessionAgentId.value = null;
+    pendingPlanRun.value = null;
+    useChatChangesStore().clear(oldSessionId);
+  }
+
+  watch(
+    () => useDisplaySettings().state.sessionListScope,
+    async () => {
+      resetSessionListScope();
+      await refreshSessions();
+    },
+  );
 
   function closeTodoPanel() {
     setTodoPanelVisible(false);
@@ -2151,6 +2197,7 @@ export const useChatStore = defineStore("chat", () => {
         sessionId: activeSessionId.value,
         text,
         agentId: agentStore.selectedAgentId || null,
+        workspaceId: newSessionWorkspaceId(),
         model,
         effort: modelStore.effortSupported ? modelStore.effort : null,
         images: images.length > 0 ? images : null,
@@ -2248,6 +2295,7 @@ export const useChatStore = defineStore("chat", () => {
         sessionId,
         text: "",
         agentId: agentStore.selectedAgentId || null,
+        workspaceId: newSessionWorkspaceId(),
         model,
         effort: modelStore.effortSupported ? modelStore.effort : null,
         images: null,

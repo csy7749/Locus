@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::asset_db::types::{guid_to_hex, parse_guid_hex, ScanPhase, ScanStats};
@@ -168,6 +169,7 @@ struct RefGraphScanContext {
     app_handle: AppHandle,
     workspace: Arc<Workspace>,
     cwd: String,
+    workspace_id: Option<String>,
     workspace_generation: u64,
     ref_graph_state: Arc<Mutex<Option<AssetDb>>>,
     watcher_handle: AssetDbWatcherHandle,
@@ -179,6 +181,7 @@ struct RefGraphScanContext {
 
 struct RefGraphScanBegin {
     cwd: String,
+    workspace_id: Option<String>,
     workspace_generation: u64,
     project_root: PathBuf,
 }
@@ -233,11 +236,37 @@ fn validate_scan_workspace(cwd: &str) -> Result<PathBuf, AppError> {
     Ok(project_root.to_path_buf())
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectScanPhase<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workspace_id: Option<&'a str>,
+    project_path: &'a str,
+    #[serde(flatten)]
+    phase: &'a ScanPhase,
+}
+
+pub fn emit_project_scan_phase(
+    app_handle: &AppHandle,
+    workspace_id: Option<&str>,
+    project_path: &str,
+    phase: &ScanPhase,
+) {
+    let payload = ProjectScanPhase {
+        workspace_id,
+        project_path,
+        phase,
+    };
+    let _ = app_handle.emit("ref-graph-scan", payload);
+}
+
 fn emit_scan_phase_if_current(
     workspace: &Arc<Workspace>,
     workspace_generation: u64,
     app_handle: &AppHandle,
     scan_phase_state: &ScanPhaseState,
+    workspace_id: Option<&str>,
+    project_path: &str,
     phase: ScanPhase,
 ) -> bool {
     let generation_guard = match workspace.lock_generation() {
@@ -252,7 +281,7 @@ fn emit_scan_phase_if_current(
         return false;
     }
 
-    let _ = app_handle.emit("ref-graph-scan", &phase);
+    emit_project_scan_phase(app_handle, workspace_id, project_path, &phase);
     scan_phase_state.set(Some(phase));
     true
 }
@@ -266,24 +295,33 @@ fn emit_scan_error(context: &RefGraphScanContext, error: &AppError) {
         context.workspace_generation,
         &context.app_handle,
         &context.scan_phase_state,
+        context.workspace_id.as_deref(),
+        &context.cwd,
         phase,
     );
 }
 
 fn emit_scan_done(context: &RefGraphScanContext, stats: ScanStats) {
     let phase = ScanPhase::Done { stats };
-    let _ = context.app_handle.emit("ref-graph-scan", &phase);
+    emit_project_scan_phase(
+        &context.app_handle,
+        context.workspace_id.as_deref(),
+        &context.cwd,
+        &phase,
+    );
 }
 
-async fn scan_workspace_snapshot(workspace: &Arc<Workspace>) -> (String, u64) {
+async fn scan_workspace_snapshot(workspace: &Arc<Workspace>) -> (String, Option<String>, u64) {
     let path = workspace.path.read().await;
-    (path.clone(), workspace.generation())
+    let workspace_id = workspace.workspace_id.read().await.clone();
+    (path.clone(), workspace_id, workspace.generation())
 }
 
 fn begin_ref_graph_scan_from_snapshot(
     workspace: &Arc<Workspace>,
     scan_phase_state: &ScanPhaseState,
     cwd: String,
+    workspace_id: Option<String>,
     workspace_generation: u64,
 ) -> Result<RefGraphScanBeginResult, AppError> {
     let generation_guard = workspace
@@ -300,6 +338,7 @@ fn begin_ref_graph_scan_from_snapshot(
 
     Ok(RefGraphScanBeginResult::Started(RefGraphScanBegin {
         cwd,
+        workspace_id,
         workspace_generation,
         project_root,
     }))
@@ -309,8 +348,14 @@ async fn begin_ref_graph_scan(
     workspace: &Arc<Workspace>,
     scan_phase_state: &ScanPhaseState,
 ) -> Result<RefGraphScanBeginResult, AppError> {
-    let (cwd, workspace_generation) = scan_workspace_snapshot(workspace).await;
-    begin_ref_graph_scan_from_snapshot(workspace, scan_phase_state, cwd, workspace_generation)
+    let (cwd, workspace_id, workspace_generation) = scan_workspace_snapshot(workspace).await;
+    begin_ref_graph_scan_from_snapshot(
+        workspace,
+        scan_phase_state,
+        cwd,
+        workspace_id,
+        workspace_generation,
+    )
 }
 
 async fn run_ref_graph_scan_job(
@@ -378,6 +423,8 @@ async fn run_ref_graph_scan_job(
     let handle = context.app_handle.clone();
     let scan_phase_state = context.scan_phase_state.clone();
     let workspace = context.workspace.clone();
+    let workspace_id = context.workspace_id.clone();
+    let project_path = context.cwd.clone();
     let workspace_generation = context.workspace_generation;
     let cancel_token = context.cancel_token.clone();
     let result = match tokio::task::spawn_blocking(move || {
@@ -396,6 +443,8 @@ async fn run_ref_graph_scan_job(
                     workspace_generation,
                     &handle,
                     &scan_phase_state,
+                    workspace_id.as_deref(),
+                    &project_path,
                     phase.clone(),
                 );
             },
@@ -407,6 +456,8 @@ async fn run_ref_graph_scan_job(
         let handle_for_reconcile = handle.clone();
         let scan_phase_state_for_reconcile = scan_phase_state.clone();
         let workspace_for_reconcile = workspace.clone();
+        let workspace_id_for_reconcile = workspace_id.clone();
+        let project_path_for_reconcile = project_path.clone();
         let cancel_for_reconcile_progress = cancel_token.clone();
         let (graph, reconcile_stats) =
             crate::asset_db::watcher::reconcile_loaded_db_with_cancel_and_progress(
@@ -422,6 +473,8 @@ async fn run_ref_graph_scan_job(
                         workspace_generation,
                         &handle_for_reconcile,
                         &scan_phase_state_for_reconcile,
+                        workspace_id_for_reconcile.as_deref(),
+                        &project_path_for_reconcile,
                         progress.to_scan_phase(),
                     );
                 },
@@ -614,6 +667,7 @@ pub async fn ref_graph_scan(
             app_handle,
             workspace,
             cwd: begin.cwd,
+            workspace_id: begin.workspace_id,
             workspace_generation: begin.workspace_generation,
             ref_graph_state: ref_graph_state.0.clone(),
             watcher_handle: watcher_handle.inner().clone(),
@@ -663,6 +717,7 @@ pub async fn ref_graph_scan_start(
         app_handle,
         workspace,
         cwd: begin.cwd,
+        workspace_id: begin.workspace_id,
         workspace_generation: begin.workspace_generation,
         ref_graph_state: ref_graph_state.0.clone(),
         watcher_handle: watcher_handle.inner().clone(),
@@ -938,6 +993,7 @@ mod tests {
             &workspace,
             &scan_phase_state,
             cwd,
+            Some("workspace-a".to_string()),
             stale_generation,
         )
         .expect("begin scan should not fail");
@@ -956,6 +1012,7 @@ mod tests {
             &workspace,
             &scan_phase_state,
             cwd.clone(),
+            Some("workspace-a".to_string()),
             workspace.generation(),
         )
         .expect("begin scan should not fail");
@@ -963,6 +1020,7 @@ mod tests {
         match result {
             RefGraphScanBeginResult::Started(begin) => {
                 assert_eq!(begin.cwd, cwd);
+                assert_eq!(begin.workspace_id.as_deref(), Some("workspace-a"));
                 assert_eq!(begin.workspace_generation, workspace.generation());
             }
             _ => panic!("expected started scan"),

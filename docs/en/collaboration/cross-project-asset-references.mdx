@@ -1,0 +1,261 @@
+---
+title: Cross-Project Read-Only Asset References
+description: Use `#project:asset-path` to reference assets from another Unity project inside the current conversation.
+sidebarTitle: Cross-Project Asset Refs
+---
+
+This direction is not about making Unity load assets across project boundaries at runtime. It is about letting Locus explicitly read asset context from another project and inject that context into the current project conversation.
+
+Suggested interaction:
+
+```text
+#B:Assets/Prefabs/Hero.prefab
+```
+
+Or an equivalent two-part form:
+
+```text
+#B + Assets/Prefabs/Hero.prefab
+```
+
+In this design:
+
+- `B` is the target project identifier
+- `Assets/...` is a path inside that project
+- the current conversation still belongs to project A
+- before sending the message, Locus resolves the reference against project B's asset index
+- then injects the resolved asset information as a read-only reference into project A's chat context
+
+## Positioning
+
+This is a **cross-project read-only reference** feature, not a Unity runtime dependency feature.
+
+It solves:
+
+- discussing work in project A while directly referencing a Prefab, Scene, Material, or Script from project B
+- cross-project comparison, migration, and reuse analysis
+- letting the Agent understand that "the target change is in A, but the reference implementation lives in B"
+
+It does not directly solve:
+
+- making project A depend on project B assets at runtime
+- automatically importing, mounting, or packaging B into A
+
+If A truly needs to use B's assets inside Unity, that still requires mounting, local package linkage, or import workflows.
+
+## Why This Is Feasible
+
+Locus already has three important building blocks:
+
+- the chat input already supports structured asset references and attachment injection
+- the asset index is already stored per Unity project, with each project keeping its own `Library/Locus/locus.db`
+- the message send pipeline already supports structured asset references as attachments
+
+So the missing layer is not "asset references" in general. It is **cross-project addressing**.
+
+## Recommended Syntax
+
+Use an explicit project-scoped reference syntax:
+
+```text
+#B:Assets/UI/Login.prefab
+#B:Packages/com.game.shared/Runtime/HeroConfig.asset
+```
+
+Design goals:
+
+- it must be obvious that the target project is not the current workspace
+- it must be clearly distinct from a normal in-project path
+- it must be easy to split into `project scope` and `asset path`
+
+Avoid extending the current implicit "path means current workspace" behavior to also cover cross-project references. That would make parsing and preview resolution ambiguous.
+
+## Behavior Model
+
+In a project A conversation, the user writes:
+
+```text
+Use #B:Assets/Prefabs/Hero.prefab as the reference implementation for a simplified version.
+```
+
+The system should:
+
+1. parse `#B:Assets/Prefabs/Hero.prefab`
+2. resolve `B` into a known `workspaceId / projectRoot`
+3. find the path inside B's asset index
+4. read the injectible content
+5. send a structured attachment together with the user message
+
+The Agent then receives:
+
+- the current project A conversation context
+- a read-only asset reference coming from project B
+
+That lets the Agent:
+
+- read B's asset structure
+- treat B as a reference implementation
+- produce change suggestions that target A
+
+## Suggested Data Model
+
+The current asset attachment shape is enough for "current workspace assets", but not enough for "assets from another project".
+
+Suggested shape:
+
+```ts
+interface AssetRefAttachment {
+  workspaceId: string;
+  projectLabel?: string;
+  path: string;
+  kind: "asset" | "sceneObject" | "knowledge";
+  name?: string;
+  typeLabel?: string;
+  source?: "unity" | "manual";
+}
+```
+
+Key changes:
+
+- `workspaceId`: tells the system which project owns the path
+- `projectLabel`: preserves the user-facing alias, such as `B`
+- `path`: remains a project-relative path instead of implicitly binding to the current workspace
+
+## Frontend Changes
+
+### 1. Input parsing
+
+The chat input needs to recognize project-scoped references:
+
+- parse `#B:Assets/...`
+- or parse a two-part form such as `#B + path`
+
+The safer approach is to turn that syntax into a structured reference object before send time, rather than leaving it as plain text and trying to recover intent later.
+
+### 2. Mention / picker behavior
+
+If the UX should feel complete, typing `#B:` should switch the asset search context to project B instead of continuing to search project A.
+
+Ideal flow:
+
+- type `#B:`
+- open asset search results from project B
+- write back `#B:Assets/...` after selection
+
+### 3. Attachment display
+
+The attachment UI should show project provenance, for example:
+
+- `B / Assets/Prefabs/Hero.prefab`
+- `B / Packages/com.game.shared/...`
+
+That keeps the source project explicit for the user.
+
+## Backend Changes
+
+### 1. Project registry
+
+You need a registry of known projects or alias mappings:
+
+- `B -> workspaceId`
+- `workspaceId -> projectRoot`
+
+This layer should not depend on the current `workingDir`. It should come from the desktop-managed project list or an explicit config.
+
+### 2. Project-aware asset resolution
+
+Many current asset commands resolve paths relative to the current workspace. Cross-project references require:
+
+- a `workspaceId`
+- a project-relative `path`
+- search, preview, and injection under that project's root and that project's `locus.db`
+
+### 3. Injection payloads
+
+The payload given to the Agent should keep source-project information, for example:
+
+- source project: B
+- asset path: `Assets/Prefabs/Hero.prefab`
+- parsed summary / YAML structure / key reference information
+
+That prevents the model from treating the asset as if it naturally belongs to project A.
+
+## Relationship to "Real" Cross-Project Reuse
+
+This should be the first layer.
+
+Layer one:
+
+- `#B:Assets/...`
+- read-only
+- for AI context
+- does not change the Unity project structure
+
+Layer two:
+
+- mount B into A under `Assets/` or `Packages/`
+- or perform import / copy flows
+- make the assets truly usable by Unity
+
+Those two layers should stay separate. The first solves understanding and reference. The second solves engineering integration and runtime availability.
+
+## Recommended Delivery Order
+
+### Phase 1: read-only cross-project references
+
+Start with:
+
+- `#B:Assets/...` syntax
+- project alias resolution
+- `workspaceId` in structured asset attachments
+- project-aware preview and injection
+
+This already covers most "use B as reference context" workflows.
+
+### Phase 2: cross-project browsing and selection
+
+Then improve the UX:
+
+- asset search after `#B:`
+- source-project labels in pickers
+- quick switching for recent or pinned projects
+
+### Phase 3: move from read-only reference to engineering integration
+
+When needed, add:
+
+- mount into `Assets`
+- mount into `Packages`
+- import / copy workflows
+
+## Risks and Boundaries
+
+### 1. Alias ambiguity
+
+`B` must resolve to exactly one project. It cannot rely on user memory alone.
+
+### 2. Stale indexes
+
+If B's `locus.db` is behind the actual disk state, that should surface explicitly instead of silently degrading.
+
+### 3. Same path across projects
+
+`Assets/Prefabs/Hero.prefab` may exist in both A and B.  
+So project scope must remain attached to the reference all the way through the pipeline.
+
+### 4. Do not pretend the asset has been imported into A
+
+Giving the Agent B's context does not mean A now owns that asset.  
+Both the injection payload and the UI should say clearly that this is an external, read-only project reference.
+
+## Conclusion
+
+`#B:asset-path` is a viable direction, and it is a better first step than trying to build a unified multi-project workspace immediately.
+
+Its correct position is:
+
+- not a runtime cross-project dependency feature
+- not automatic Unity asset mounting
+- but a **cross-project read-only context reference** feature
+
+As long as project scope is added consistently across input parsing, attachment models, backend path resolution, and injection payloads, this capability can land cleanly.

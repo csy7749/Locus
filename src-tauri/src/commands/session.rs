@@ -27,6 +27,7 @@ use crate::session::models::{
 use crate::session::pending_inputs::QueuePendingInputRequest;
 use crate::session::store::{SessionStore, CHILD_SESSION_FORK_ERROR};
 use crate::tool::ToolRegistry;
+use crate::unity_project_runtime::{ActivatedUnityProjectRuntime, UnityProjectRegistry};
 use crate::workspace::Workspace;
 use crate::{
     ActiveTaskHandle, ActiveTasks, AgentDefRegistryState, ApiKeyState, PendingInputQueueHandle,
@@ -54,6 +55,8 @@ pub struct ChatLaunch {
 
 const ACTIVE_SESSION_SELECTION_FILE: &str = "active_session_selection.json";
 const ACTIVE_SESSION_GLOBAL_WORKSPACE_KEY: &str = "__global__";
+const ACTIVE_SESSION_ALL_PROJECTS_KEY: &str = "__all_projects__";
+const SESSION_LIST_SCOPE_ALL_PROJECTS: &str = "allProjects";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -116,7 +119,19 @@ fn write_active_session_selection_state(
         .map_err(|e| format!("Failed to save active session selection: {}", e))
 }
 
-async fn active_session_workspace_key(workspace: &State<'_, Arc<Workspace>>) -> String {
+fn is_all_projects_scope(scope: Option<&str>) -> bool {
+    scope
+        .map(str::trim)
+        .is_some_and(|value| value == SESSION_LIST_SCOPE_ALL_PROJECTS)
+}
+
+async fn active_session_workspace_key(
+    workspace: &State<'_, Arc<Workspace>>,
+    selection_scope: Option<&str>,
+) -> String {
+    if is_all_projects_scope(selection_scope) {
+        return ACTIVE_SESSION_ALL_PROJECTS_KEY.to_string();
+    }
     workspace
         .workspace_id
         .read()
@@ -124,6 +139,79 @@ async fn active_session_workspace_key(workspace: &State<'_, Arc<Workspace>>) -> 
         .clone()
         .filter(|id| !id.trim().is_empty())
         .unwrap_or_else(|| ACTIVE_SESSION_GLOBAL_WORKSPACE_KEY.to_string())
+}
+
+fn inactive_project_error(workspace_id: &str) -> AppError {
+    AppError::new(
+        "unity_project.inactive",
+        "Unity project is registered but not activated in Locus.",
+    )
+    .detail(workspace_id.to_string())
+    .operation("chat")
+}
+
+async fn fallback_workspace_context(workspace: &Workspace) -> (String, Option<String>) {
+    let working_dir = workspace.path.read().await.clone();
+    let workspace_id = if working_dir.trim().is_empty() {
+        None
+    } else {
+        workspace.workspace_id.read().await.clone()
+    };
+    (working_dir, workspace_id)
+}
+
+async fn fallback_unscoped_workspace_context(workspace: &Workspace) -> (String, Option<String>) {
+    let working_dir = workspace.path.read().await.clone();
+    (working_dir, None)
+}
+
+fn runtime_context(
+    runtime: Arc<ActivatedUnityProjectRuntime>,
+) -> (String, Option<String>) {
+    (
+        runtime.project_path.clone(),
+        Some(runtime.workspace_id.clone()),
+    )
+}
+
+async fn resolve_workspace_for_new_session(
+    workspace_id: Option<&str>,
+    workspace: &Workspace,
+    registry: &UnityProjectRegistry,
+) -> Result<(String, Option<String>), AppError> {
+    if let Some(workspace_id) = workspace_id.map(str::trim).filter(|value| !value.is_empty()) {
+        let runtime = registry.activated_runtime(workspace_id)?;
+        return Ok(runtime_context(runtime));
+    }
+
+    Ok(fallback_unscoped_workspace_context(workspace).await)
+}
+
+async fn resolve_workspace_for_session_execution(
+    session_id: &str,
+    store: &SessionStore,
+    workspace: &Workspace,
+    registry: &UnityProjectRegistry,
+) -> Result<(String, Option<String>), AppError> {
+    if let Some(workspace_id) = store.get_session_workspace_id(session_id)? {
+        let runtime = registry
+            .activated_runtime(&workspace_id)
+            .map_err(|_| inactive_project_error(&workspace_id))?;
+        return Ok(runtime_context(runtime));
+    }
+
+    Ok(fallback_workspace_context(workspace).await)
+}
+
+async fn resolve_workspace_id_for_session_list(
+    workspace_id: Option<&str>,
+    _workspace: &Workspace,
+    _registry: &UnityProjectRegistry,
+) -> Result<Option<String>, AppError> {
+    if let Some(workspace_id) = workspace_id.map(str::trim).filter(|value| !value.is_empty()) {
+        return Ok(Some(workspace_id.to_string()));
+    }
+    Ok(None)
 }
 
 fn emit_session_stream(app_handle: &AppHandle, store: &SessionStore, event: StreamEvent) {
@@ -749,15 +837,17 @@ pub async fn create_session(
     parent_session_id: Option<String>,
     session_type: Option<String>,
     agent_id: Option<String>,
+    workspace_id: Option<String>,
     workspace: State<'_, Arc<Workspace>>,
+    unity_projects: State<'_, Arc<UnityProjectRegistry>>,
     store: State<'_, Arc<SessionStore>>,
 ) -> Result<String, AppError> {
-    let cwd = workspace.path.read().await.clone();
-    let ws_id = if cwd.trim().is_empty() {
-        None
-    } else {
-        workspace.workspace_id.read().await.clone()
-    };
+    let (_cwd, ws_id) = resolve_workspace_for_new_session(
+        workspace_id.as_deref(),
+        workspace.inner().as_ref(),
+        unity_projects.inner().as_ref(),
+    )
+    .await?;
     let trimmed = title.trim();
     let resolved_title = if trimmed.is_empty() {
         "New session"
@@ -825,6 +915,7 @@ pub async fn chat(
     text: String,
     session_title: Option<String>,
     agent_id: Option<String>,
+    workspace_id: Option<String>,
     model: Option<String>,
     effort: Option<String>,
     images: Option<Vec<ImageData>>,
@@ -844,6 +935,7 @@ pub async fn chat(
     _provider_keys: State<'_, ProviderKeysState>,
     codex: State<'_, CodexAuthStateHandle>,
     workspace: State<'_, Arc<Workspace>>,
+    unity_projects: State<'_, Arc<UnityProjectRegistry>>,
     raw_store: State<'_, RawContextStore>,
     active_tasks: State<'_, ActiveTasks>,
     app_knowledge_dir: State<'_, crate::commands::AppKnowledgeDir>,
@@ -851,30 +943,40 @@ pub async fn chat(
     undo_manager: State<'_, crate::UndoManagerHandle>,
 ) -> Result<ChatLaunch, AppError> {
     let registry_snapshot = registry.snapshot().await;
-    let cwd = workspace.path.read().await.clone();
-    let ws_id = if cwd.trim().is_empty() {
-        None
-    } else {
-        workspace.workspace_id.read().await.clone()
-    };
 
     let requested_agent_id = agent_id
         .as_deref()
         .map(canonical_agent_id)
         .map(str::to_string);
-    let sid = match session_id {
-        Some(id) => id,
+    let (sid, cwd, ws_id) = match session_id {
+        Some(id) => {
+            let (cwd, ws_id) = resolve_workspace_for_session_execution(
+                &id,
+                store.inner().as_ref(),
+                workspace.inner().as_ref(),
+                unity_projects.inner().as_ref(),
+            )
+            .await?;
+            (id, cwd, ws_id)
+        }
         None => {
+            let (cwd, ws_id) = resolve_workspace_for_new_session(
+                workspace_id.as_deref(),
+                workspace.inner().as_ref(),
+                unity_projects.inner().as_ref(),
+            )
+            .await?;
             let title = session_title
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or_else(|| text.chars().take(20).collect());
-            store.create_session(
+            let sid = store.create_session(
                 &title,
                 None,
                 ws_id.as_deref(),
                 session_type.as_deref().unwrap_or("chat"),
                 requested_agent_id.as_deref(),
-            )?
+            )?;
+            (sid, cwd, ws_id)
         }
     };
 
@@ -1611,19 +1713,26 @@ pub async fn rollback_session_to_message(
 
 #[tauri::command]
 pub async fn list_sessions(
+    workspace_id: Option<String>,
+    list_scope: Option<String>,
     store: State<'_, Arc<SessionStore>>,
     workspace: State<'_, Arc<Workspace>>,
+    unity_projects: State<'_, Arc<UnityProjectRegistry>>,
     active_tasks: State<'_, ActiveTasks>,
 ) -> Result<Vec<SessionSummary>, AppError> {
-    let cwd = workspace.path.read().await.clone();
-    let ws_id = if cwd.trim().is_empty() {
-        None
+    let mut sessions = if is_all_projects_scope(list_scope.as_deref()) {
+        store.list_all_sessions().map_err(AppError::from)?
     } else {
-        workspace.workspace_id.read().await.clone()
+        let ws_id = resolve_workspace_id_for_session_list(
+            workspace_id.as_deref(),
+            workspace.inner().as_ref(),
+            unity_projects.inner().as_ref(),
+        )
+        .await?;
+        store
+            .list_sessions(ws_id.as_deref())
+            .map_err(AppError::from)?
     };
-    let mut sessions = store
-        .list_sessions(ws_id.as_deref())
-        .map_err(AppError::from)?;
     let active_session_runs: HashMap<String, String> = active_tasks
         .lock()
         .await
@@ -1647,15 +1756,21 @@ pub async fn list_sessions(
 
 #[tauri::command]
 pub async fn list_archived_sessions(
+    workspace_id: Option<String>,
+    list_scope: Option<String>,
     store: State<'_, Arc<SessionStore>>,
     workspace: State<'_, Arc<Workspace>>,
+    unity_projects: State<'_, Arc<UnityProjectRegistry>>,
 ) -> Result<Vec<SessionSummary>, AppError> {
-    let cwd = workspace.path.read().await.clone();
-    let ws_id = if cwd.trim().is_empty() {
-        None
-    } else {
-        workspace.workspace_id.read().await.clone()
-    };
+    if is_all_projects_scope(list_scope.as_deref()) {
+        return store.list_all_archived_sessions().map_err(Into::into);
+    }
+    let ws_id = resolve_workspace_id_for_session_list(
+        workspace_id.as_deref(),
+        workspace.inner().as_ref(),
+        unity_projects.inner().as_ref(),
+    )
+    .await?;
     store
         .list_archived_sessions(ws_id.as_deref())
         .map_err(Into::into)
@@ -1663,10 +1778,11 @@ pub async fn list_archived_sessions(
 
 #[tauri::command]
 pub async fn get_active_session_selection(
+    selection_scope: Option<String>,
     app_handle: AppHandle,
     workspace: State<'_, Arc<Workspace>>,
 ) -> Result<Option<String>, AppError> {
-    let key = active_session_workspace_key(&workspace).await;
+    let key = active_session_workspace_key(&workspace, selection_scope.as_deref()).await;
     let state = read_active_session_selection_state(&app_handle)?;
     Ok(state
         .by_workspace
@@ -1678,10 +1794,11 @@ pub async fn get_active_session_selection(
 #[tauri::command]
 pub async fn save_active_session_selection(
     session_id: Option<String>,
+    selection_scope: Option<String>,
     app_handle: AppHandle,
     workspace: State<'_, Arc<Workspace>>,
 ) -> Result<(), AppError> {
-    let key = active_session_workspace_key(&workspace).await;
+    let key = active_session_workspace_key(&workspace, selection_scope.as_deref()).await;
     let mut state = read_active_session_selection_state(&app_handle).unwrap_or_default();
     let normalized_session_id = session_id
         .as_deref()
@@ -3038,12 +3155,90 @@ mod tests {
     use super::{
         append_enabled_tools_markdown, append_project_config_markdown, extract_enabled_tools,
         format_rounds_as_markdown, format_session_detail_as_markdown, parse_sse_response,
-        ExportEnabledTool, ExportProjectConfig, EMPTY_EXPORT_FIELD,
+        resolve_workspace_for_session_execution, ExportEnabledTool, ExportProjectConfig,
+        EMPTY_EXPORT_FIELD,
     };
     use crate::session::models::{ChatMessage, MessageRole, SessionDetail, ToolCallInfo};
     use crate::session::store::SessionStore;
+    use crate::unity_project_runtime::UnityProjectRegistry;
+    use crate::workspace::Workspace;
     use rusqlite::{params, Connection};
+    use std::path::Path;
     use tempfile::tempdir;
+
+    fn create_unity_project(product_guid: &str) -> tempfile::TempDir {
+        let project = tempfile::tempdir().expect("create unity project");
+        std::fs::create_dir_all(project.path().join("Assets")).expect("create Assets");
+        std::fs::create_dir_all(project.path().join("ProjectSettings"))
+            .expect("create ProjectSettings");
+        std::fs::write(
+            project.path().join("ProjectSettings/ProjectSettings.asset"),
+            format!("PlayerSettings:\n  productGUID: {product_guid}\n"),
+        )
+        .expect("write ProjectSettings");
+        project
+    }
+
+    #[tokio::test]
+    async fn session_execution_uses_session_workspace_not_active_ui_project() {
+        let project_a = create_unity_project("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let project_b = create_unity_project("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let registry = UnityProjectRegistry::new();
+        let workspace_a = registry
+            .register_project(&project_a.path().to_string_lossy())
+            .expect("register project A");
+        let workspace_b = registry
+            .register_project(&project_b.path().to_string_lossy())
+            .expect("register project B");
+        registry.activate_project(&workspace_a).expect("activate A");
+        registry.activate_project(&workspace_b).expect("activate B");
+        registry
+            .select_active_ui_project(Some(&workspace_b))
+            .expect("select B");
+
+        let store_dir = tempfile::tempdir().expect("session store");
+        let store = SessionStore::new(store_dir.path()).expect("session store");
+        let session_id = store
+            .create_session("Project A", None, Some(&workspace_a), "chat", None)
+            .expect("create session");
+        let workspace = Workspace::new(
+            project_b.path().display().to_string(),
+            Some(workspace_b.clone()),
+        );
+
+        let (working_dir, workspace_id) = resolve_workspace_for_session_execution(
+            &session_id,
+            &store,
+            &workspace,
+            &registry,
+        )
+        .await
+        .expect("resolve execution workspace");
+
+        assert_eq!(workspace_id.as_deref(), Some(workspace_a.as_str()));
+        assert_eq!(Path::new(&working_dir), project_a.path());
+    }
+
+    #[tokio::test]
+    async fn session_execution_rejects_inactive_registered_project() {
+        let project = create_unity_project("cccccccccccccccccccccccccccccccc");
+        let registry = UnityProjectRegistry::new();
+        let workspace_id = registry
+            .register_project(&project.path().to_string_lossy())
+            .expect("register project");
+        let store_dir = tempfile::tempdir().expect("session store");
+        let store = SessionStore::new(store_dir.path()).expect("session store");
+        let session_id = store
+            .create_session("Inactive", None, Some(&workspace_id), "chat", None)
+            .expect("create session");
+        let workspace = Workspace::new(String::new(), None);
+
+        let error = resolve_workspace_for_session_execution(&session_id, &store, &workspace, &registry)
+            .await
+            .expect_err("inactive project should be rejected");
+
+        assert_eq!(error.code, "unity_project.inactive");
+    }
 
     #[test]
     fn project_config_section_includes_workspace_flags() {

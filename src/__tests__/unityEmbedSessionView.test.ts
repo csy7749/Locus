@@ -442,7 +442,11 @@ describe("Unity embedded session view", () => {
     expect(chat).toContain("e.ctrlKey || e.metaKey");
     expect(chat).toContain("openUnityAssetInspector(filePath)");
     expect(service).toContain("open_unity_asset_inspector");
+    expect(service).toContain("resolveUnityCommandWorkspaceId(workspaceId)");
+    expect(service).toContain("workspaceId: resolveUnityCommandWorkspaceId(workspaceId)");
     expect(commands).toContain("pub async fn open_unity_asset_inspector");
+    expect(commands).toContain("unity_command_project_path(");
+    expect(commands).toContain("unity_projects.activated_runtime(id)?.project_path.clone()");
     expect(bridge).toContain('send_message(project_path, "open_asset_inspector"');
     expect(app).toContain("commands::open_unity_asset_inspector");
     expect(unityBridge).toContain('case "open_asset_inspector"');
@@ -592,11 +596,16 @@ describe("Unity embedded session view", () => {
     expect(service).toContain("unity_embed_start_asset_drag");
     expect(service).toContain("unity_embed_cancel_asset_drag");
     expect(service).toContain("unity_embed_start_native_asset_file_drag");
+    expect(service).toContain("currentUnityEmbedWorkspaceId");
+    expect(service).toContain("workspaceId: currentUnityEmbedWorkspaceId()");
     expect(service).toContain("locus_start_native_file_drag");
     expect(command).toContain("pub async fn unity_embed_set_drag_passthrough");
     expect(command).toContain("pub async fn unity_embed_start_asset_drag");
     expect(command).toContain("pub async fn unity_embed_cancel_asset_drag");
     expect(command).toContain("pub async fn unity_embed_start_native_asset_file_drag");
+    expect(command).toContain("workspace_id: Option<String>");
+    expect(command).toContain("fn unity_embed_project_path");
+    expect(command).toContain("unity_projects.activated_runtime(id)?.project_path.clone()");
     expect(command).toContain("pub async fn locus_start_native_file_drag");
     expect(command).toContain("native_locus_file_drag_paths");
     expect(command).toContain("run_on_main_thread");
@@ -622,6 +631,9 @@ describe("Unity embedded session view", () => {
     expect(unityBridge).toContain('case "start_asset_drag"');
     expect(unityBridge).toContain("QueueOutboundAssetDrag(request.refs, out status)");
     expect(editorWindow).toContain("internal static bool QueueOutboundAssetDrag");
+    expect(editorWindow).toContain("[SerializeField] private string _workspaceId");
+    expect(editorWindow).toContain("public string workspaceId;");
+    expect(editorWindow).toContain("workspaceId = _workspaceId");
     const externalDragBridge = read("locus_unity/Editor/LocusExternalAssetDragBridge.cs");
     const queueMethod = editorWindow.slice(
       editorWindow.indexOf("internal static bool QueueOutboundAssetDrag"),

@@ -107,4 +107,31 @@ describe("buildSessionTree", () => {
       expect(tree[1].title).toBe("AI State Machine");
     }
   });
+
+  it("groups all-project sessions by project and sorts each group by latest update time", () => {
+    const sessions = [
+      makeSession({ id: "project-a-old", title: "A Old", workspaceId: "project-a", sessionType: "chat", updatedAt: 10 }),
+      makeSession({ id: "project-b-new", title: "B New", workspaceId: "project-b", sessionType: "chat", updatedAt: 40 }),
+      makeSession({ id: "project-a-new", title: "A New", workspaceId: "project-a", sessionType: "chat", updatedAt: 30 }),
+      makeSession({ id: "unscoped", title: "No Project", sessionType: "chat", updatedAt: 20 }),
+    ];
+
+    const tree = buildSessionTree({
+      sessions,
+      groupByProject: true,
+      projectLabelForSession: (session) => session.workspaceId === "project-a" ? "Project A" : "Project B",
+      unscopedProjectLabel: "No project",
+    });
+
+    expect(tree.map((node) => node.kind === "folder" ? node.label : "")).toEqual([
+      "Project B",
+      "Project A",
+      "No project",
+    ]);
+    expect(tree.map((node) => node.updatedAt)).toEqual([40, 30, 20]);
+    expect(tree[1].children.map((node) => node.sourceSessionId)).toEqual([
+      "project-a-new",
+      "project-a-old",
+    ]);
+  });
 });

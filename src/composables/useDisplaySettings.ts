@@ -9,6 +9,7 @@ export type DiffReviewTarget = "inline" | "window";
 export type ChatDiffReviewTarget = DiffReviewTarget;
 export type GitDiffReviewTarget = DiffReviewTarget;
 export type SessionListScope = "activeProject" | "allProjects";
+export type SessionListAllProjectsMode = "timeline" | "byProject";
 
 export interface DisplaySettings {
   /** Auto-open TODO panel when todos arrive */
@@ -25,6 +26,8 @@ export interface DisplaySettings {
   gitDiffReviewTarget: DiffReviewTarget;
   /** Scope used by the left session list */
   sessionListScope: SessionListScope;
+  /** Layout used when the left session list shows all projects */
+  sessionListAllProjectsMode: SessionListAllProjectsMode;
   /** Right-align user messages in the session transcript */
   rightAlignUserMessages: boolean;
   /** Collapse completed tool call batches in chat transcript */
@@ -91,6 +94,7 @@ const defaults: DisplaySettings = {
   chatDiffReviewTarget: "window",
   gitDiffReviewTarget: "window",
   sessionListScope: "activeProject",
+  sessionListAllProjectsMode: "timeline",
   rightAlignUserMessages: true,
   compactToolCalls: true,
   hideThinkingBlocks: true,

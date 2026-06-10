@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { ChevronRight, Folder, FolderOpen } from "lucide";
 import { t } from "../../i18n";
 import type { SessionSummary } from "../../types";
+import type { SessionListAllProjectsMode } from "../../composables/useDisplaySettings";
 import { formatShortcut, useKeyboardShortcuts } from "../../composables/useKeyboardShortcuts";
 import { normalizeAppError } from "../../services/errors";
 import { getLocusRuntime, type RuntimeUnsubscribe } from "../../services/locusRuntime";
@@ -23,6 +24,7 @@ const MAX_RECENT_SESSIONS = 12;
 const STORAGE_KEY_VIEW_EXPANDED = "locus:sessionPanelViewExpanded";
 const VIEW_TREE_INDENT_BASE_PX = 8;
 const VIEW_TREE_INDENT_STEP_PX = 18;
+const UNSCOPED_PROJECT_KEY = "__unscoped__";
 
 const props = defineProps<{
   sessions: SessionSummary[];
@@ -32,6 +34,7 @@ const props = defineProps<{
   workingDir?: string;
   showViews?: boolean;
   showProjectLabels?: boolean;
+  sessionListAllProjectsMode?: SessionListAllProjectsMode;
   newSessionDisabled?: boolean;
 }>();
 
@@ -50,6 +53,12 @@ interface VisibleViewRow {
   depth: number;
   expanded: boolean;
   hasChildren: boolean;
+}
+
+interface RecentSessionGroup {
+  key: string;
+  label: string;
+  sessions: SessionSummary[];
 }
 
 const emit = defineEmits<{
@@ -80,6 +89,25 @@ const sortedSessions = computed(() =>
 );
 
 const recentSessions = computed(() => sortedSessions.value.slice(0, MAX_RECENT_SESSIONS));
+const groupRecentSessionsByProject = computed(() =>
+  props.showProjectLabels === true && props.sessionListAllProjectsMode === "byProject",
+);
+
+const recentSessionGroups = computed<RecentSessionGroup[]>(() => {
+  const groups: RecentSessionGroup[] = [];
+  const groupByKey = new Map<string, RecentSessionGroup>();
+  for (const session of recentSessions.value) {
+    const key = compactProjectGroupKey(session);
+    let group = groupByKey.get(key);
+    if (!group) {
+      group = { key, label: compactProjectGroupLabel(session), sessions: [] };
+      groupByKey.set(key, group);
+      groups.push(group);
+    }
+    group.sessions.push(session);
+  }
+  return groups;
+});
 
 const activeSession = computed(() =>
   props.activeSessionId
@@ -149,6 +177,17 @@ function sessionProjectLabel(session: SessionSummary): string {
   const project = projectStore.unityProjects.get(workspaceId);
   return project?.name?.trim()
     || (project?.projectPath ? projectNameFromPath(project.projectPath) : "");
+}
+
+function compactProjectGroupKey(session: SessionSummary): string {
+  return session.workspaceId?.trim() || UNSCOPED_PROJECT_KEY;
+}
+
+function compactProjectGroupLabel(session: SessionSummary): string {
+  const label = sessionProjectLabel(session);
+  if (label) return label;
+  const key = compactProjectGroupKey(session);
+  return key === UNSCOPED_PROJECT_KEY ? t("chat.session.unscopedProject") : key;
 }
 
 function loadViewExpandedState(): Record<string, boolean> {
@@ -484,27 +523,49 @@ onUnmounted(() => {
             {{ t("chat.session.noSessions") }}
           </div>
           <template v-else>
-            <button
-              v-for="session in recentSessions"
-              :key="session.id"
-              type="button"
-              class="session-compact-option"
-              :class="{
-                active: session.id === activeSessionId,
-                running: streamingSessionIds?.has(session.id),
-              }"
-              @click="selectSession(session.id)"
-            >
-              <span class="session-compact-option-dot"></span>
-              <span class="session-compact-option-title">{{ session.title || t("chat.session.newSession") }}</span>
-              <span
-                v-if="sessionProjectLabel(session)"
-                class="session-compact-option-project"
+            <template v-if="groupRecentSessionsByProject">
+              <template v-for="group in recentSessionGroups" :key="group.key">
+                <div class="session-compact-project-header">{{ group.label }}</div>
+                <button
+                  v-for="session in group.sessions"
+                  :key="session.id"
+                  type="button"
+                  class="session-compact-option"
+                  :class="{
+                    active: session.id === activeSessionId,
+                    running: streamingSessionIds?.has(session.id),
+                  }"
+                  @click="selectSession(session.id)"
+                >
+                  <span class="session-compact-option-dot"></span>
+                  <span class="session-compact-option-title">{{ session.title || t("chat.session.newSession") }}</span>
+                  <span class="session-compact-option-time">{{ formatSessionTime(session.updatedAt) }}</span>
+                </button>
+              </template>
+            </template>
+            <template v-else>
+              <button
+                v-for="session in recentSessions"
+                :key="session.id"
+                type="button"
+                class="session-compact-option"
+                :class="{
+                  active: session.id === activeSessionId,
+                  running: streamingSessionIds?.has(session.id),
+                }"
+                @click="selectSession(session.id)"
               >
-                {{ sessionProjectLabel(session) }}
-              </span>
-              <span class="session-compact-option-time">{{ formatSessionTime(session.updatedAt) }}</span>
-            </button>
+                <span class="session-compact-option-dot"></span>
+                <span class="session-compact-option-title">{{ session.title || t("chat.session.newSession") }}</span>
+                <span
+                  v-if="sessionProjectLabel(session)"
+                  class="session-compact-option-project"
+                >
+                  {{ sessionProjectLabel(session) }}
+                </span>
+                <span class="session-compact-option-time">{{ formatSessionTime(session.updatedAt) }}</span>
+              </button>
+            </template>
           </template>
         </div>
 
@@ -791,6 +852,18 @@ onUnmounted(() => {
   flex-shrink: 1;
   font-size: 11px;
   color: var(--text-secondary);
+}
+
+.session-compact-project-header {
+  min-height: 22px;
+  padding: 7px 8px 3px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .session-compact-option-shortcut {

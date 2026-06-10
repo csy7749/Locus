@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { SessionSummary, SaveRawContextRequest } from "../../types";
 import type { SessionTreeNode, SessionTreeSessionNode } from "./sessionTree";
+import type { SessionListAllProjectsMode } from "../../composables/useDisplaySettings";
 import {
   computed,
   ref,
@@ -122,6 +123,7 @@ const props = defineProps<{
   workingDir?: string;
   showViews?: boolean;
   showProjectLabels?: boolean;
+  sessionListAllProjectsMode?: SessionListAllProjectsMode;
   newSessionDisabled?: boolean;
 }>();
 
@@ -237,9 +239,16 @@ try {
   // ignore persistence failures
 }
 
+const groupSessionsByProject = computed(() =>
+  props.showProjectLabels === true && props.sessionListAllProjectsMode === "byProject",
+);
+
 const sessionTree = computed(() => buildSessionTree({
   sessions: props.sessions,
   streamingSessionIds: props.streamingSessionIds,
+  groupByProject: groupSessionsByProject.value,
+  projectLabelForSession: sessionProjectLabel,
+  unscopedProjectLabel: t("chat.session.unscopedProject"),
 }));
 
 function loadViewExpandedState(): Record<string, boolean> {
@@ -1210,7 +1219,8 @@ onUnmounted(() => {
 
 function isNodeExpanded(node: SessionTreeNode): boolean {
   const stored = expandedState.value[node.key];
-  return stored === true;
+  if (stored !== undefined) return stored;
+  return node.kind === "folder" && node.key.startsWith("project:");
 }
 
 function setNodeExpanded(key: string, value: boolean) {

@@ -40,6 +40,16 @@ export interface SessionTreeSessionNode {
 
 export type SessionTreeNode = SessionTreeFolderNode | SessionTreeSessionNode;
 
+export interface BuildSessionTreeOptions {
+  sessions: SessionSummary[];
+  streamingSessionIds?: Set<string>;
+  groupByProject?: boolean;
+  projectLabelForSession?: (session: SessionSummary) => string;
+  unscopedProjectLabel?: string;
+}
+
+const UNSCOPED_PROJECT_KEY = "__unscoped__";
+
 function normalizeSessionTitle(title: string, sessionType: string, isChild: boolean): string {
   const trimmed = title.trim();
   if (!trimmed) return "";
@@ -160,13 +170,12 @@ function foldFolderMetadata(node: SessionTreeNode): SessionTreeStatus | null {
   return status;
 }
 
-export function buildSessionTree(options: {
-  sessions: SessionSummary[];
-  streamingSessionIds?: Set<string>;
-}): SessionTreeNode[] {
-  const streamingSessionIds = options.streamingSessionIds ?? new Set<string>();
+function buildSessionRoots(
+  sessions: SessionSummary[],
+  streamingSessionIds: Set<string>,
+): SessionTreeNode[] {
   const actualNodeById = new Map<string, SessionTreeNode>();
-  for (const session of options.sessions) {
+  for (const session of sessions) {
     actualNodeById.set(
       session.id,
       createActualNode(session, streamingSessionIds),
@@ -174,7 +183,7 @@ export function buildSessionTree(options: {
   }
 
   const roots: SessionTreeNode[] = [];
-  for (const session of options.sessions) {
+  for (const session of sessions) {
     const node = actualNodeById.get(session.id)!;
     const parentId = session.parentSessionId ?? null;
     const parent = parentId ? actualNodeById.get(parentId) : null;
@@ -190,6 +199,64 @@ export function buildSessionTree(options: {
   }
   sortNodes(roots);
   return roots;
+}
+
+function projectGroupKey(session: SessionSummary): string {
+  return session.workspaceId?.trim() || UNSCOPED_PROJECT_KEY;
+}
+
+function projectGroupLabel(options: BuildSessionTreeOptions, sessions: SessionSummary[]): string {
+  const first = sessions[0];
+  if (!first || projectGroupKey(first) === UNSCOPED_PROJECT_KEY) {
+    return options.unscopedProjectLabel ?? "";
+  }
+  return options.projectLabelForSession?.(first).trim() || projectGroupKey(first);
+}
+
+function createProjectGroupNode(
+  key: string,
+  label: string,
+  children: SessionTreeNode[],
+): SessionTreeFolderNode {
+  return {
+    kind: "folder",
+    key: `project:${key}`,
+    label,
+    updatedAt: Math.max(...children.map((child) => child.updatedAt)),
+    status: children.reduce<SessionTreeStatus | null>(
+      (status, child) => maxStatus(status, child.status),
+      null,
+    ),
+    children,
+    sourceSessionId: null,
+  };
+}
+
+function buildProjectGroupedSessionTree(options: BuildSessionTreeOptions): SessionTreeNode[] {
+  const streamingSessionIds = options.streamingSessionIds ?? new Set<string>();
+  const grouped = new Map<string, SessionSummary[]>();
+  for (const session of options.sessions) {
+    const key = projectGroupKey(session);
+    grouped.set(key, [...(grouped.get(key) ?? []), session]);
+  }
+
+  const nodes = [...grouped.entries()].map(([key, sessions]) =>
+    createProjectGroupNode(
+      key,
+      projectGroupLabel(options, sessions),
+      buildSessionRoots(sessions, streamingSessionIds),
+    ),
+  );
+  sortNodes(nodes);
+  return nodes;
+}
+
+export function buildSessionTree(options: BuildSessionTreeOptions): SessionTreeNode[] {
+  if (options.groupByProject) {
+    return buildProjectGroupedSessionTree(options);
+  }
+  const streamingSessionIds = options.streamingSessionIds ?? new Set<string>();
+  return buildSessionRoots(options.sessions, streamingSessionIds);
 }
 
 export function nodeContainsSession(node: SessionTreeNode, sessionId: string | null): boolean {

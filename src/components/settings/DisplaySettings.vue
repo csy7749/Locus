@@ -2,7 +2,13 @@
 import { computed, ref, onMounted } from "vue";
 import { t } from "../../i18n";
 import { useTheme, type ThemePreference } from "../../composables/useTheme";
-import { useDisplaySettings, type DiffReviewTarget, type FontSlot, type SessionListScope } from "../../composables/useDisplaySettings";
+import {
+  useDisplaySettings,
+  type DiffReviewTarget,
+  type FontSlot,
+  type SessionListAllProjectsMode,
+  type SessionListScope,
+} from "../../composables/useDisplaySettings";
 import { normalizeAppError } from "../../services/errors";
 import { ipcInvoke } from "../../services/ipc";
 import {
@@ -46,6 +52,11 @@ const diffReviewTargetOptions = computed(() => [
 const sessionListScopeOptions = computed(() => [
   { value: "activeProject", label: t("settings.display.sessionListActiveProject") },
   { value: "allProjects", label: t("settings.display.sessionListAllProjects") },
+]);
+
+const sessionListAllProjectsModeOptions = computed(() => [
+  { value: "timeline", label: t("settings.display.sessionListAllProjectsTimeline") },
+  { value: "byProject", label: t("settings.display.sessionListAllProjectsByProject") },
 ]);
 
 const fontSlots: { slot: FontSlot; labelKey: string; mono: boolean }[] = [
@@ -247,6 +258,18 @@ async function updateViewWindowsAboveMain(value: boolean) {
         :aria-label="t('settings.display.sessionListScope')"
         size="sm"
         @update:model-value="setDisplay('sessionListScope', $event as SessionListScope)"
+      />
+    </div>
+
+    <div v-if="display.sessionListScope === 'allProjects'" class="choice-row">
+      <span class="choice-label">{{ t("settings.display.sessionListAllProjectsMode") }}</span>
+      <BaseSegmented
+        class="choice-segmented"
+        :model-value="display.sessionListAllProjectsMode"
+        :options="sessionListAllProjectsModeOptions"
+        :aria-label="t('settings.display.sessionListAllProjectsMode')"
+        size="sm"
+        @update:model-value="setDisplay('sessionListAllProjectsMode', $event as SessionListAllProjectsMode)"
       />
     </div>
 

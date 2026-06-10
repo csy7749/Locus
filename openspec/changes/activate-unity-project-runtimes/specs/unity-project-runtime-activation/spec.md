@@ -85,6 +85,22 @@ The system SHALL distinguish the active UI project selection from activated proj
 - **WHEN** the user changes the active UI project selection from project A to project B
 - **THEN** project A remains activated until the user explicitly deactivates it
 
+### Requirement: Workspace project selector lists registered Unity projects
+The system SHALL render the workspace project selector from registered Unity project statuses, using recent workspace paths only to order matching registered projects.
+
+#### Scenario: Registered project row is rendered
+- **WHEN** the workspace project selector shows a registered Unity project
+- **THEN** the row shows the project name, activation/editor/bridge status, full project path, and activation or deactivation control
+
+#### Scenario: Recent path is not a registered Unity project
+- **WHEN** a recent workspace path has no matching registered Unity project status
+- **THEN** the workspace project selector does not render that recent path as a project row
+
+#### Scenario: Recent paths order registered projects
+- **WHEN** recent workspace paths match registered Unity project statuses
+- **THEN** the matching registered projects appear in recent path order
+- **AND** registered Unity projects that are not in recent paths appear after the recently ordered projects
+
 ### Requirement: Session list scope is user configurable
 The system SHALL let users choose whether the left session list follows the active UI project or shows all project sessions.
 

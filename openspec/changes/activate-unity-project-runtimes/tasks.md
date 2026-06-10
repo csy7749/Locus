@@ -33,6 +33,7 @@
 - [x] 4.8 Support all-project session listing without switching the active UI project when a session from another project is selected.
 - [x] 4.9 Show project names on session rows in all-project mode.
 - [x] 4.10 Disable chat input for sessions whose owning project is registered but inactive.
+- [x] 4.11 Render the workspace project selector from registered Unity project statuses only, using recent workspace paths only for ordering.
 
 ## 5. Unity Embed And Project-Scoped Windows
 

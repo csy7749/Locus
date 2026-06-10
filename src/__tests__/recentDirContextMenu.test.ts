@@ -19,7 +19,8 @@ describe("recent directory context menu", () => {
     const en = read("src/language/en.json");
 
     expect(app).toContain("const recentDirContextMenu = ref<RecentDirContextMenu | null>(null);");
-    expect(app).toContain("@contextmenu.prevent.stop=\"openRecentDirContextMenu($event, dir)\"");
+    expect(app).toContain("@contextmenu.prevent.stop=\"openWorkspaceEntryContextMenu($event, entry)\"");
+    expect(app).toContain("openRecentDirContextMenu(event, entry.project.projectPath)");
     expect(app).toContain("openContextRecentDirInFileExplorer");
     expect(app).toContain("removeContextRecentDir");
     expect(app).toContain("class=\"recent-dir-ctx-menu\"");

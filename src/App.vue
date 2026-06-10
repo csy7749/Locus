@@ -286,6 +286,14 @@ type RecentDirContextMenu = {
   dir: string;
 };
 
+type WorkspaceMenuEntry = {
+  key: string;
+  recent: boolean;
+  project: UnityProjectStatus;
+};
+
+const UNORDERED_WORKSPACE_INDEX = Number.MAX_SAFE_INTEGER;
+
 const showDirDropdown = ref(false);
 const dirDropdownRef = ref<HTMLElement | null>(null);
 const recentDirContextMenu = ref<RecentDirContextMenu | null>(null);
@@ -299,6 +307,9 @@ const appCloseRunningTaskCount = ref(0);
 const runningSessionCount = computed(() => chatStore.streamingSessionIds.size);
 const workspaceUnityProjects = computed(() =>
   [...projectStore.unityProjectList].sort((left, right) => left.name.localeCompare(right.name)),
+);
+const workspaceMenuEntries = computed(() =>
+  buildWorkspaceMenuEntries(projectStore.recentDirs, workspaceUnityProjects.value),
 );
 const workspaceCurrentUnityProject = computed(() =>
   workspaceUnityProjects.value.find((project) => isWorkspaceProjectCurrent(project)) ?? null,
@@ -372,18 +383,47 @@ function shortDir(dir: string): string {
   return parts.length > 0 ? parts[parts.length - 1] : dir;
 }
 
-function parentPath(dir: string): string {
-  const parts = dir.replace(/\\/g, "/").split("/").filter(Boolean);
-  if (parts.length <= 1) return "";
-  return parts.slice(0, -1).join("/");
-}
-
 function normalizeWorkspacePath(dir: string): string {
   return dir.trim().replace(/\\/g, "/").replace(/\/+$/g, "").toLowerCase();
 }
 
+function createWorkspaceEntry(project: UnityProjectStatus, recent: boolean): WorkspaceMenuEntry {
+  return {
+    key: project.workspaceId,
+    recent,
+    project,
+  };
+}
+
+function workspaceProjectRecentIndex(
+  project: UnityProjectStatus,
+  recentOrder: Map<string, number>,
+): number {
+  return recentOrder.get(normalizeWorkspacePath(project.projectPath)) ?? UNORDERED_WORKSPACE_INDEX;
+}
+
+function buildWorkspaceMenuEntries(
+  recentDirs: string[],
+  projects: UnityProjectStatus[],
+): WorkspaceMenuEntry[] {
+  const recentOrder = new Map(recentDirs.map((dir, index) => [normalizeWorkspacePath(dir), index]));
+  return [...projects]
+    .sort((left, right) => {
+      const orderDiff = workspaceProjectRecentIndex(left, recentOrder) - workspaceProjectRecentIndex(right, recentOrder);
+      return orderDiff || left.name.localeCompare(right.name);
+    })
+    .map((project) => createWorkspaceEntry(
+      project,
+      recentOrder.has(normalizeWorkspacePath(project.projectPath)),
+    ));
+}
+
 function isWorkspaceProjectCurrent(project: UnityProjectStatus): boolean {
   return normalizeWorkspacePath(project.projectPath) === normalizeWorkspacePath(projectStore.workingDir);
+}
+
+function isWorkspaceEntryCurrent(entry: WorkspaceMenuEntry): boolean {
+  return normalizeWorkspacePath(entry.project.projectPath) === normalizeWorkspacePath(projectStore.workingDir);
 }
 
 function workspaceProjectStatusText(project: UnityProjectStatus): string {
@@ -520,18 +560,16 @@ async function handleAppCloseRequest() {
   await confirmAppClose();
 }
 
-async function selectRecentDir(dir: string) {
+async function selectWorkspaceEntry(entry: WorkspaceMenuEntry) {
   if (workspaceSwitchBusy.value) return;
   closeRecentDirContextMenu();
   showDirDropdown.value = false;
-  await requestWorkingDirChange(dir);
+  await requestWorkingDirChange(entry.project.projectPath);
 }
 
-async function selectWorkspaceProject(project: UnityProjectStatus) {
-  if (workspaceSwitchBusy.value) return;
-  closeRecentDirContextMenu();
-  showDirDropdown.value = false;
-  await requestWorkingDirChange(project.projectPath);
+function openWorkspaceEntryContextMenu(event: MouseEvent, entry: WorkspaceMenuEntry) {
+  if (!entry.recent) return;
+  openRecentDirContextMenu(event, entry.project.projectPath);
 }
 
 async function refreshSessionsAfterWorkspaceProjectAction(previousWorkspaceId: string | null) {
@@ -984,65 +1022,41 @@ watch(() => projectStore.workingDir, () => {
           </button>
           <Transition name="dropdown">
             <div v-if="showDirDropdown" class="dir-dropdown">
-              <template v-if="workspaceUnityProjects.length > 0">
-                <div class="dropdown-label unity-project-label">Unity 项目</div>
-                <div
-                  v-for="project in workspaceUnityProjects"
-                  :key="project.workspaceId"
-                  class="unity-project-row"
-                  :class="{
-                    active: isWorkspaceProjectCurrent(project),
-                    [workspaceProjectStatusClass(project)]: true,
-                  }"
-                  :title="project.projectPath"
-                >
-                  <button
-                    class="unity-project-main"
-                    type="button"
-                    @click="selectWorkspaceProject(project)"
-                  >
-                    <span class="unity-project-state-dot" aria-hidden="true"></span>
-                    <span class="unity-project-text">
-                      <span class="unity-project-name">{{ project.name }}</span>
-                      <span class="unity-project-status">{{ workspaceProjectStatusText(project) }}</span>
-                    </span>
-                    <span v-if="isWorkspaceProjectCurrent(project)" class="dir-check">&#10003;</span>
-                  </button>
-                  <button
-                    class="unity-project-action"
-                    type="button"
-                    :disabled="workspaceProjectBusyId !== null"
-                    :aria-busy="workspaceProjectBusyId === project.workspaceId"
-                    @click.stop="project.activated ? deactivateWorkspaceProject(project) : activateWorkspaceProject(project)"
-                  >
-                    {{ workspaceProjectBusyId === project.workspaceId ? "处理中" : project.activated ? "停用" : "激活" }}
-                  </button>
-                </div>
-                <div class="dropdown-divider"></div>
-              </template>
-              <div class="dropdown-label">{{ t("app.dir.recentDirs") }}</div>
               <div
-                v-for="dir in projectStore.recentDirs"
-                :key="dir"
-                class="dir-item"
+                v-for="entry in workspaceMenuEntries"
+                :key="entry.key"
+                class="workspace-entry-row"
                 :class="{
-                  active: dir === projectStore.workingDir,
-                  'context-selected': recentDirContextMenu?.dir === dir,
+                  active: isWorkspaceEntryCurrent(entry),
+                  'context-selected': entry.recent && recentDirContextMenu?.dir === entry.project.projectPath,
+                  [workspaceProjectStatusClass(entry.project)]: true,
                 }"
-                @click="selectRecentDir(dir)"
-                @contextmenu.prevent.stop="openRecentDirContextMenu($event, dir)"
-                :title="dir"
+                :title="entry.project.projectPath"
+                @contextmenu.prevent.stop="openWorkspaceEntryContextMenu($event, entry)"
               >
-                <svg class="dir-item-icon" viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
-                  <path d="M1 3.5A1.5 1.5 0 0 1 2.5 2h3.879a1.5 1.5 0 0 1 1.06.44l1.122 1.12A1.5 1.5 0 0 0 9.62 4H13.5A1.5 1.5 0 0 1 15 5.5v7a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 12.5v-9z"/>
-                </svg>
-                <div class="dir-item-text">
-                  <span class="dir-item-name">{{ shortDir(dir) }}</span>
-                  <span class="dir-item-path">{{ parentPath(dir) }}</span>
-                </div>
-                <span v-if="dir === projectStore.workingDir" class="dir-check">&#10003;</span>
+                <button class="workspace-entry-main" type="button" @click="selectWorkspaceEntry(entry)">
+                  <span
+                    class="workspace-entry-state-dot"
+                    aria-hidden="true"
+                  ></span>
+                  <span class="workspace-entry-text">
+                    <span class="workspace-entry-name">{{ entry.project.name }}</span>
+                    <span class="workspace-entry-status">{{ workspaceProjectStatusText(entry.project) }}</span>
+                    <span class="workspace-entry-path">{{ entry.project.projectPath }}</span>
+                  </span>
+                  <span v-if="isWorkspaceEntryCurrent(entry)" class="dir-check">&#10003;</span>
+                </button>
+                <button
+                  class="workspace-entry-action"
+                  type="button"
+                  :disabled="workspaceProjectBusyId !== null"
+                  :aria-busy="workspaceProjectBusyId === entry.project.workspaceId"
+                  @click.stop="entry.project.activated ? deactivateWorkspaceProject(entry.project) : activateWorkspaceProject(entry.project)"
+                >
+                  {{ workspaceProjectBusyId === entry.project.workspaceId ? "处理中" : entry.project.activated ? "停用" : "激活" }}
+                </button>
               </div>
-              <div v-if="projectStore.recentDirs.length === 0" class="dropdown-empty">{{ t("app.dir.noRecords") }}</div>
+              <div v-if="workspaceMenuEntries.length === 0" class="dropdown-empty">{{ t("app.dir.noRecords") }}</div>
               <div class="dropdown-divider"></div>
               <div class="dir-item browse" @click="browseFromDropdown">
                 <svg class="dir-item-icon" viewBox="0 0 16 16" fill="currentColor" width="12" height="12">
@@ -1878,12 +1892,7 @@ body.is-dragging-select-lock * {
   padding: 6px 8px 4px;
 }
 
-.unity-project-label {
-  text-transform: none;
-  letter-spacing: 0;
-}
-
-.unity-project-row {
+.workspace-entry-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: stretch;
@@ -1893,24 +1902,24 @@ body.is-dragging-select-lock * {
   color: var(--text-color);
 }
 
-.unity-project-row:hover,
-.unity-project-row.active {
+.workspace-entry-row:hover,
+.workspace-entry-row.active {
   background: var(--hover-bg);
 }
 
-.unity-project-row.active {
+.workspace-entry-row.active {
   background: var(--active-bg);
 }
 
-.unity-project-main,
-.unity-project-action {
+.workspace-entry-main,
+.workspace-entry-action {
   border: 0;
   border-radius: 5px;
   font: inherit;
   font-size: 12px;
 }
 
-.unity-project-main {
+.workspace-entry-main {
   min-width: 0;
   display: flex;
   align-items: center;
@@ -1922,11 +1931,11 @@ body.is-dragging-select-lock * {
   cursor: pointer;
 }
 
-.unity-project-main:hover {
+.workspace-entry-main:hover {
   background: color-mix(in srgb, var(--hover-bg) 70%, transparent);
 }
 
-.unity-project-state-dot {
+.workspace-entry-state-dot {
   width: 7px;
   height: 7px;
   flex: 0 0 auto;
@@ -1934,19 +1943,19 @@ body.is-dragging-select-lock * {
   background: var(--text-tertiary);
 }
 
-.unity-project-row.is-activated .unity-project-state-dot {
+.workspace-entry-row.is-activated .workspace-entry-state-dot {
   background: var(--status-good-fg);
 }
 
-.unity-project-row.is-connected .unity-project-state-dot {
+.workspace-entry-row.is-connected .workspace-entry-state-dot {
   background: var(--accent-color);
 }
 
-.unity-project-row.is-editor-open .unity-project-state-dot {
+.workspace-entry-row.is-editor-open .workspace-entry-state-dot {
   background: var(--status-warn-fg);
 }
 
-.unity-project-text {
+.workspace-entry-text {
   min-width: 0;
   flex: 1;
   display: flex;
@@ -1954,23 +1963,29 @@ body.is-dragging-select-lock * {
   gap: 1px;
 }
 
-.unity-project-name,
-.unity-project-status {
+.workspace-entry-name,
+.workspace-entry-status,
+.workspace-entry-path {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.unity-project-name {
+.workspace-entry-name {
   font-weight: 500;
 }
 
-.unity-project-status {
+.workspace-entry-status {
   font-size: 10px;
   color: var(--text-secondary);
 }
 
-.unity-project-action {
+.workspace-entry-path {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.workspace-entry-action {
   align-self: center;
   min-width: 42px;
   height: 24px;
@@ -1982,12 +1997,12 @@ body.is-dragging-select-lock * {
   white-space: nowrap;
 }
 
-.unity-project-action:hover:not(:disabled) {
+.workspace-entry-action:hover:not(:disabled) {
   border-color: var(--border-strong);
   background: var(--hover-bg);
 }
 
-.unity-project-action:disabled {
+.workspace-entry-action:disabled {
   cursor: progress;
   opacity: 0.68;
 }
